@@ -1,5 +1,7 @@
 use crate::Config;
 
+use chrono::{DateTime, Utc};
+
 // ============================================================================
 // API 基础 URL 常量
 // ============================================================================
@@ -133,6 +135,25 @@ impl ResultEntry {
             .filter(|p| !p.is_empty())
             .map(|p| format!("https://github.com/{p}"))
     }
+
+    // ---- 时间字段 → chrono 转换 ----
+
+    /// `created_at` 解析为 `DateTime<Utc>`
+    pub fn created_at_dt(&self) -> Option<DateTime<Utc>> {
+        parse_iso8601(self.created_at.as_deref())
+    }
+
+    /// `updated_at` 解析为 `DateTime<Utc>`
+    pub fn updated_at_dt(&self) -> Option<DateTime<Utc>> {
+        parse_iso8601(self.updated_at.as_deref())
+    }
+
+    /// `latest_release.released_at` 解析为 `DateTime<Utc>`
+    pub fn released_at_dt(&self) -> Option<DateTime<Utc>> {
+        self.latest_release
+            .as_ref()
+            .and_then(|r| parse_iso8601(Some(&r.released_at)))
+    }
 }
 
 /// 模组发布版本信息
@@ -190,6 +211,31 @@ impl Tag {
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct ErrorResponse {
     pub message: String,
+}
+
+// ============================================================================
+// 辅助函数
+// ============================================================================
+
+/// 解析 Factorio API 返回的 ISO 8601 / RFC 3339 时间字符串
+fn parse_iso8601(s: Option<&str>) -> Option<DateTime<Utc>> {
+    s.and_then(|s| {
+        // chrono 的 DateTime::parse_from_rfc3339 比较严格，
+        // 但 Factorio 返回的格式有多种变体，用宽松解析
+        DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|dt| dt.with_timezone(&Utc))
+            .or_else(|| {
+                // 回退：尝试 naive datetime + 假定 UTC
+                chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.fZ")
+                    .ok()
+                    .or_else(|| {
+                        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
+                            .ok()
+                    })
+                    .map(|naive| DateTime::from_naive_utc_and_offset(naive, Utc))
+            })
+    })
 }
 
 // ============================================================================
@@ -622,7 +668,150 @@ impl FactorioWebClient {
     pub async fn unbookmark(&self, mod_name: &str) -> anyhow::Result<()> {
         self.toggle_bookmark(mod_name, false).await
     }
+
+    // ------------------------------------------------------------------
+    // 高级组合方法 — 基于底层 API 的多步编排
+    // ------------------------------------------------------------------
+
+    /// 获取最近更新的前 `limit` 个模组。
+    ///
+    /// 通过 `sort=updated_at&sort_order=desc` 实现，服务端排序。
+    /// `version` 为 Factorio 版本号（如 `"2.0.76"`），用于过滤不兼容的模组。
+    pub async fn get_recently_updated(
+        &self,
+        limit: u64,
+        version: &str,
+    ) -> anyhow::Result<Vec<ResultEntry>> {
+        let query = ModsQuery {
+            page_size: Some(PageSize::Size(limit)),
+            sort: Some(SortBy::UpdatedAt),
+            sort_order: Some(SortOrder::Desc),
+            hide_deprecated: Some(true),
+            version: Some(version.to_string()),
+            ..Default::default()
+        };
+        let resp = self.list_mods(Some(&query)).await?;
+        Ok(resp.results)
+    }
+
+    /// 获取最新创建的前 `limit` 个模组。
+    ///
+    /// 通过 `sort=created_at&sort_order=desc` 实现。
+    pub async fn get_newest_mods(
+        &self,
+        limit: u64,
+        version: &str,
+    ) -> anyhow::Result<Vec<ResultEntry>> {
+        let query = ModsQuery {
+            page_size: Some(PageSize::Size(limit)),
+            sort: Some(SortBy::CreatedAt),
+            sort_order: Some(SortOrder::Desc),
+            hide_deprecated: Some(true),
+            version: Some(version.to_string()),
+            ..Default::default()
+        };
+        let resp = self.list_mods(Some(&query)).await?;
+        Ok(resp.results)
+    }
+
+    /// 获取在指定时间之后更新的所有模组（尽力而为）。
+    ///
+    /// 策略：按 `updated_at` 降序分页遍历，用 `latest_release.released_at` 做
+    /// 客户端过滤。当一整页条目都不满足时间条件时提前终止（因为降序排列）。
+    ///
+    /// **注意**：列表端点不返回 `updated_at` 字段，这里使用
+    /// `latest_release.released_at` 作为近似判断依据。如果某个模组的最新发布版
+    /// 是在 `since` 之前但其 `updated_at` 在 `since` 之后（如仅更新了描述），
+    /// 此方法会漏掉它。需要精确结果请对结果逐个调用 `get_mod_full`。
+    ///
+    /// `page_size` 控制每页获取数量（默认 100）。
+    pub async fn get_mods_updated_since(
+        &self,
+        since: DateTime<Utc>,
+        version: &str,
+        page_size: Option<u64>,
+    ) -> anyhow::Result<Vec<ResultEntry>> {
+        let ps = page_size.unwrap_or(100).min(100);
+        let mut all_results: Vec<ResultEntry> = Vec::new();
+        let mut page: u64 = 1;
+
+        loop {
+            let query = ModsQuery {
+                page_size: Some(PageSize::Size(ps)),
+                page: Some(page),
+                sort: Some(SortBy::UpdatedAt),
+                sort_order: Some(SortOrder::Desc),
+                hide_deprecated: Some(true),
+                version: Some(version.to_string()),
+                ..Default::default()
+            };
+            let resp = self.list_mods(Some(&query)).await?;
+            let results = resp.results;
+
+            if results.is_empty() {
+                break;
+            }
+
+            // 客户端过滤 + 提前终止判断
+            let mut page_has_match = false;
+            for entry in results {
+                let released_after = entry
+                    .released_at_dt()
+                    .is_some_and(|dt| dt >= since);
+
+                if released_after {
+                    page_has_match = true;
+                    all_results.push(entry);
+                }
+            }
+
+            // 降序排列，如果整页没有匹配项，后续页也不会有了
+            if !page_has_match {
+                break;
+            }
+
+            // 如果返回的条目数少于 page_size，说明已是最后一页
+            if (resp.pagination.page) >= resp.pagination.page_count {
+                break;
+            }
+
+            page += 1;
+        }
+
+        Ok(all_results)
+    }
+
+    /// 从已有条目列表中过滤出 `latest_release.released_at >= since` 的模组。
+    ///
+    /// 可用于对 `all_mods()` 或任意列表结果做二次过滤。
+    pub fn filter_updated_since(
+        entries: &[ResultEntry],
+        since: DateTime<Utc>,
+    ) -> Vec<&ResultEntry> {
+        entries
+            .iter()
+            .filter(|e| e.released_at_dt().is_some_and(|dt| dt >= since))
+            .collect()
+    }
+
+    /// 按名称搜索并过滤出在指定时间之后更新的模组。
+    ///
+    /// 先用 `mods_by_names` 批量获取，再客户端按时间过滤。
+    pub async fn find_updated_since_by_names(
+        &self,
+        names: &[&str],
+        since: DateTime<Utc>,
+    ) -> anyhow::Result<Vec<ResultEntry>> {
+        let resp = self.mods_by_names(names).await?;
+        let filtered: Vec<ResultEntry> = resp
+            .results
+            .into_iter()
+            .filter(|e| e.released_at_dt().is_some_and(|dt| dt >= since))
+            .collect();
+        Ok(filtered)
+    }
 }
+
 
 // ============================================================================
 // 测试
@@ -710,6 +899,23 @@ mod tests {
 
         let bookmarks = client.get_bookmarks().await?;
         println!("收藏的模组: {:?}", bookmarks);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_mods_since() -> anyhow::Result<()> {
+        let (username, password) = get_credentials();
+        let client = FactorioWebClient::login(username, password).await?;
+
+        let since = chrono::Utc::now()
+            .checked_sub_signed(chrono::Duration::days(1))
+            .unwrap();
+        dbg!(since);
+        let mods = client.get_mods_updated_since(since, "2.0.76", Some(50)).await?;
+        println!("{} 之后更新的模组:", since);
+        for m in mods {
+            println!("  - {} (latest release: {:?})", m.name, m.latest_release);
+        }
         Ok(())
     }
 }
