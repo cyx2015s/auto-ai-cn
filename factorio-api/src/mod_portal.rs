@@ -104,9 +104,9 @@ pub struct ResultEntry {
     pub github_path: Option<String>,
     #[serde(default)]
     pub homepage: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_one_or_many")]
     pub tags: Option<Vec<Tag>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_one_or_many")]
     pub license: Option<Vec<License>>,
     #[serde(default)]
     pub updated_at: Option<String>,
@@ -190,6 +190,33 @@ impl Tag {
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct ErrorResponse {
     pub message: String,
+}
+
+// ============================================================================
+// 辅助反序列化 — API 对单元素数组有时返回裸对象而非 `[{...}]`
+// ============================================================================
+
+/// 反序列化：接受 JSON null → `None`，单对象 → `Some(vec![obj])`，数组 → `Some(vec)`
+fn deserialize_optional_one_or_many<'de, D, T>(deserializer: D) -> Result<Option<Vec<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    use serde::Deserialize;
+
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany<T> {
+        One(T),
+        Many(Vec<T>),
+    }
+
+    // `Option<OneOrMany<T>>` 将 null 反序列化为 None，值反序列化为一或多项
+    match Option::<OneOrMany<T>>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(OneOrMany::One(item)) => Ok(Some(vec![item])),
+        Some(OneOrMany::Many(items)) => Ok(Some(items)),
+    }
 }
 
 // ============================================================================
@@ -656,6 +683,9 @@ mod tests {
         println!("模组: {} — {}", m.name, m.title);
         if let Some(ref releases) = m.releases {
             println!("发布版本数: {}", releases.len());
+            if releases.last().is_some() {
+                println!("最新版本: {:?}", releases[releases.len() - 1]);
+            }
         }
         Ok(())
     }
