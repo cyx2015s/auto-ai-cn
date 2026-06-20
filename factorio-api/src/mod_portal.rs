@@ -915,4 +915,32 @@ mod tests {
         }
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_download_mod() -> anyhow::Result<()> {
+        let (username, password) = get_credentials();
+        let client = FactorioWebClient::login(username, password).await?;
+
+        let mod_info = client.get_mod("rso-mod").await?;
+        if let Some(ref release) = mod_info.latest_release {
+            println!("下载模组: {} (version {})", mod_info.name, release.version);
+            let data = client.download_release(release).await?;
+            println!("下载完成，文件大小: {} bytes", data.len());
+            let file = std::path::Path::new(&release.file_name);
+            tokio::fs::write(file, &data).await?;
+            println!("文件已保存到: {:?}", file);
+        } else if let Some(ref releases) = mod_info.releases
+            && let Some(latest) = releases.last()
+        {
+            println!("下载模组: {} (version {})", mod_info.name, latest.version);
+            let data = client.download_release(latest).await?;
+            println!("下载完成，文件大小: {} bytes", data.len());
+            let file = std::path::Path::new(&latest.file_name);
+            tokio::fs::write(file, &data).await?;
+            println!("文件已保存到: {:?}", file);
+        } else {
+            println!("模组没有发布版本，无法下载");
+        }
+        Ok(())
+    }
 }
