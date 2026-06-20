@@ -1,0 +1,13 @@
+[package]
+name = "factorio-api"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+dotenvy = "0.15.7"
+reqwest = { version = "0.13.4", features = ["json", "form", "query"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+stream = "0.1.0"
+tokio = { version = "1.52.3", features = ["full"] }
