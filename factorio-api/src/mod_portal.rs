@@ -229,10 +229,7 @@ fn parse_iso8601(s: Option<&str>) -> Option<DateTime<Utc>> {
                 // 回退：尝试 naive datetime + 假定 UTC
                 chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.fZ")
                     .ok()
-                    .or_else(|| {
-                        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
-                            .ok()
-                    })
+                    .or_else(|| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").ok())
                     .map(|naive| DateTime::from_naive_utc_and_offset(naive, Utc))
             })
     })
@@ -534,12 +531,7 @@ impl FactorioWebClient {
     /// 可选参数：`query`（搜索关键词）、`order`、`page`、`page_size`。
     pub async fn search_mods(&self, search: &SearchQuery) -> anyhow::Result<SearchResponse> {
         let url = format!("{MOD_API_BASE}/search");
-        let resp = self
-            .client
-            .post(&url)
-            .json(search)
-            .send()
-            .await?;
+        let resp = self.client.post(&url).json(search).send().await?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -755,9 +747,7 @@ impl FactorioWebClient {
             // 客户端过滤 + 提前终止判断
             let mut page_has_match = false;
             for entry in results {
-                let released_after = entry
-                    .released_at_dt()
-                    .is_some_and(|dt| dt >= since);
+                let released_after = entry.released_at_dt().is_some_and(|dt| dt >= since);
 
                 if released_after {
                     page_has_match = true;
@@ -812,7 +802,6 @@ impl FactorioWebClient {
     }
 }
 
-
 // ============================================================================
 // 测试
 // ============================================================================
@@ -856,9 +845,15 @@ mod tests {
             ..Default::default()
         };
         let resp = client.list_mods(Some(&query)).await?;
-        println!("总数: {}, 当前页大小: {}", resp.pagination.count, resp.pagination.page_size);
+        println!(
+            "总数: {}, 当前页大小: {}",
+            resp.pagination.count, resp.pagination.page_size
+        );
         for m in &resp.results {
-            println!("  - {} by {} (downloads: {})", m.name, m.owner, m.downloads_count);
+            println!(
+                "  - {} by {} (downloads: {})",
+                m.name, m.owner, m.downloads_count
+            );
         }
         Ok(())
     }
@@ -911,7 +906,9 @@ mod tests {
             .checked_sub_signed(chrono::Duration::days(1))
             .unwrap();
         dbg!(since);
-        let mods = client.get_mods_updated_since(since, "2.0.76", Some(50)).await?;
+        let mods = client
+            .get_mods_updated_since(since, "2.0.76", Some(50))
+            .await?;
         println!("{} 之后更新的模组:", since);
         for m in mods {
             println!("  - {} (latest release: {:?})", m.name, m.latest_release);
