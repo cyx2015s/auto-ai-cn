@@ -164,10 +164,11 @@ impl FlowConfig {
 
 /// 从 zip 字节数据中提取 locale 目录下的翻译文件。
 ///
+/// Factorio mod 的 zip 内部通常有一层根目录（如 `mod-name_version/`），
+/// 本函数会先自动检测并剥离这层前缀，再查找 `locale/<语言代码>/<文件名>.cfg`。
+///
 /// 返回 `LocaleInfo`，其中 key 为语言代码（如 `"zh-CN"`, `"en"`），
 /// value 为该语言下所有 `.cfg` 文件的内容。
-///
-/// Factorio mod 的翻译文件位于 `locale/<语言代码>/<文件名>.cfg`。
 pub fn extract_locale_from_zip(zip_bytes: &[u8]) -> anyhow::Result<LocaleInfo> {
     let cursor = Cursor::new(zip_bytes);
     let mut archive = zip::ZipArchive::new(cursor).context("无法打开 zip 文件")?;
@@ -177,14 +178,29 @@ pub fn extract_locale_from_zip(zip_bytes: &[u8]) -> anyhow::Result<LocaleInfo> {
         version: String::new(),
     };
 
+    // 收集所有文件名，检测公共根目录前缀
+    let mut all_names = Vec::with_capacity(archive.len());
+    for i in 0..archive.len() {
+        if let Ok(file) = archive.by_index(i) {
+            all_names.push(file.name().to_string());
+        }
+    }
+    let strip_prefix = find_common_root_prefix(&all_names);
+
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
 
-        // 只处理大小合理的文件，跳过目录
-        let name = file.name().to_string();
-        if name.ends_with('/') || file.size() > 5 * 1024 * 1024 {
+        let raw_name = file.name().to_string();
+        // 跳过目录和超大文件
+        if raw_name.ends_with('/') || file.size() > 5 * 1024 * 1024 {
             continue;
         }
+
+        // 剥离公共根目录前缀（如 "mod-name_version/"）
+        let name = match &strip_prefix {
+            Some(prefix) => raw_name.strip_prefix(prefix).unwrap_or(&raw_name),
+            None => &raw_name,
+        };
 
         // 解析 locale/<lang>/<filename>.cfg 路径
         if let Some(rest) = name.strip_prefix("locale/") {
@@ -211,22 +227,50 @@ pub fn extract_locale_from_zip(zip_bytes: &[u8]) -> anyhow::Result<LocaleInfo> {
                     .insert(file_name, content);
             }
         }
-    }
 
-    // 如果 zip 中包含 info.json，提取版本号
-    if let Ok(mut info_file) = archive.by_name("info.json") {
-        let mut info_content = String::new();
-        if info_file.read_to_string(&mut info_content).is_ok()
-            && let Ok(info) = serde_json::from_str::<serde_json::Value>(&info_content) {
+        // 同时检测 info.json（可能在根目录前缀下）
+        if name == "info.json" {
+            let mut info_content = String::new();
+            if file.read_to_string(&mut info_content).is_ok()
+                && let Ok(info) = serde_json::from_str::<serde_json::Value>(&info_content)
+            {
                 locale_info.version = info
                     .get("version")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
             }
+        }
     }
 
     Ok(locale_info)
+}
+
+/// 从文件路径列表中检测公共根目录前缀。
+///
+/// 例：`["foo/bar.txt", "foo/baz/info.json"]` → `Some("foo/")`
+/// 仅考虑目录级前缀（以 `/` 结尾），要求所有非目录条目共享该前缀。
+fn find_common_root_prefix(names: &[String]) -> Option<String> {
+    let files: Vec<&str> = names
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|s| !s.ends_with('/'))
+        .collect();
+    if files.is_empty() {
+        return None;
+    }
+
+    let first = files[0];
+    let first_slash = first.find('/')?;
+
+    // 候选前缀 = 第一个 '/' 之前的部分 + '/'
+    let candidate = &first[..=first_slash];
+
+    if files.iter().all(|f| f.starts_with(candidate)) {
+        Some(candidate.to_string())
+    } else {
+        None
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -939,42 +983,87 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_extract_locale_from_zip() {
-        // 创建一个测试用的 zip 文件
+    /// 创建包含 locale 文件和 info.json 的测试 zip
+    fn make_test_zip(prefix: &str) -> Vec<u8> {
         let cursor = std::io::Cursor::new(Vec::new());
         let mut zip_writer = zip::ZipWriter::new(cursor);
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored);
 
         zip_writer
-            .start_file("locale/en/base.cfg", options)
+            .start_file(format!("{prefix}locale/en/base.cfg"), options)
             .unwrap();
         zip_writer
             .write_all(b"[entity-name]\niron-plate=Iron plate\ncopper-plate=Copper plate\n")
             .unwrap();
 
         zip_writer
-            .start_file("locale/zh-CN/base.cfg", options)
+            .start_file(format!("{prefix}locale/zh-CN/base.cfg"), options)
             .unwrap();
         zip_writer
             .write_all("[entity-name]\niron-plate=铁板\n".as_bytes())
             .unwrap();
 
-        zip_writer.start_file("info.json", options).unwrap();
+        zip_writer
+            .start_file(format!("{prefix}info.json"), options)
+            .unwrap();
         zip_writer
             .write_all(b"{\"name\":\"test-mod\",\"version\":\"1.0.0\"}")
             .unwrap();
 
-        let zip_buf = zip_writer.finish().unwrap().into_inner();
+        zip_writer.finish().unwrap().into_inner()
+    }
 
+    #[test]
+    fn test_extract_locale_from_zip_no_prefix() {
+        // 无根目录前缀（如手动构建的 zip）
+        let zip_buf = make_test_zip("");
         let locale = super::extract_locale_from_zip(&zip_buf).unwrap();
         assert_eq!(locale.version, "1.0.0");
         assert_eq!(locale.contents.len(), 2);
         assert!(locale.contents.contains_key("en"));
         assert!(locale.contents.contains_key("zh-CN"));
-
         let en_base = locale.contents["en"].contents["base.cfg"].as_str();
         assert!(en_base.contains("iron-plate=Iron plate"));
+    }
+
+    #[test]
+    fn test_extract_locale_from_zip_with_prefix() {
+        // 有根目录前缀（模拟真实 Factorio mod zip，如 "test-mod_1.0.0/"）
+        let zip_buf = make_test_zip("test-mod_1.0.0/");
+        let locale = super::extract_locale_from_zip(&zip_buf).unwrap();
+        assert_eq!(locale.version, "1.0.0");
+        assert_eq!(locale.contents.len(), 2);
+        assert!(locale.contents.contains_key("en"));
+        assert!(locale.contents.contains_key("zh-CN"));
+        let en_base = locale.contents["en"].contents["base.cfg"].as_str();
+        assert!(en_base.contains("iron-plate=Iron plate"));
+    }
+
+    #[test]
+    fn test_find_common_root_prefix() {
+        let names = vec![
+            "mod_1.0.0/locale/en/base.cfg".to_string(),
+            "mod_1.0.0/locale/zh-CN/base.cfg".to_string(),
+            "mod_1.0.0/info.json".to_string(),
+        ];
+        assert_eq!(
+            super::find_common_root_prefix(&names).as_deref(),
+            Some("mod_1.0.0/")
+        );
+
+        // 无公共前缀
+        let names2 = vec![
+            "locale/en/base.cfg".to_string(),
+            "other/info.json".to_string(),
+        ];
+        assert_eq!(super::find_common_root_prefix(&names2), None);
+
+        // 单文件
+        let names3 = vec!["foo/bar.txt".to_string()];
+        assert_eq!(
+            super::find_common_root_prefix(&names3).as_deref(),
+            Some("foo/")
+        );
     }
 }
