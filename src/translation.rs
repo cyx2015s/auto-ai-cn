@@ -2,6 +2,8 @@
 pub struct LocaleInfo {
     /// lang code -> lang info
     pub contents: indexmap::IndexMap<String, LangInfo>,
+    /// 版本号
+    pub version: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -10,8 +12,14 @@ pub struct LangInfo {
     pub contents: indexmap::IndexMap<String, String>,
 }
 
-pub fn as_ini(s: &str) -> ini::Ini {
+pub fn str_to_ini(s: &str) -> ini::Ini {
     ini::Ini::load_from_str(s).unwrap()
+}
+
+pub fn ini_to_str(ini: &ini::Ini) -> String {
+    let mut output = Vec::new();
+    ini.write_to(&mut output).unwrap();
+    String::from_utf8(output).unwrap()
 }
 
 /// 返回新 ini 中新出现的内容，不包括被移除的内容
@@ -39,7 +47,7 @@ pub fn merge_ini(reference: &ini::Ini, old: &ini::Ini, diff: &ini::Ini) -> ini::
     for (sec, prop) in reference.iter() {
         let old_prop = old.section(sec);
         let diff_prop = diff.section(sec);
-        for (k, v) in prop.iter() {
+        for (k, _) in prop.iter() {
             if let Some(diff_v) = diff_prop.and_then(|p| p.get(k)) {
                 merged.with_section(sec).set(k, diff_v);
             } else if let Some(old_v) = old_prop.and_then(|p| p.get(k)) {
@@ -56,7 +64,7 @@ mod tests {
 
     #[test]
     fn test_diff_ini() {
-        let old = as_ini(
+        let old = str_to_ini(
             r#"[section1]
 key1=value1
 key3=value3
@@ -64,7 +72,7 @@ key3=value3
 keyA=valueA
 "#,
         );
-        let new = as_ini(
+        let new = str_to_ini(
             r#"[section1]
 key1=value1
 key2=value2
@@ -79,7 +87,7 @@ keyB=valueB
 
     #[test]
     fn test_merge_ini() {
-        let reference = as_ini(
+        let reference = str_to_ini(
             r#"[section1]
 key1=value1
 key2=value2
@@ -87,7 +95,7 @@ key2=value2
 keyB=valueB
 "#,
         );
-        let old = as_ini(
+        let old = str_to_ini(
             r#"[section1]
 key1=value1
 key3=value3
