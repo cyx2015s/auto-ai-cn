@@ -727,6 +727,7 @@ impl FactorioWebClient {
         since: DateTime<Utc>,
         version: &str,
         page_size: Option<u64>,
+        max_size: Option<u64>,
     ) -> anyhow::Result<Vec<ResultEntry>> {
         let ps = page_size.unwrap_or(100).min(100);
         let mut all_results: Vec<ResultEntry> = Vec::new();
@@ -757,6 +758,10 @@ impl FactorioWebClient {
                 if released_after {
                     page_has_match = true;
                     all_results.push(entry);
+                }
+
+                if all_results.len() as u64 >= max_size.unwrap_or(u64::MAX) {
+                    break;
                 }
             }
 
@@ -912,7 +917,7 @@ mod tests {
             .unwrap();
         dbg!(since);
         let mods = client
-            .get_mods_updated_since(since, "2.0.76", Some(50))
+            .get_mods_updated_since(since, "2.0.76", Some(50), Some(50))
             .await?;
         println!("{} 之后更新的模组:", since);
         for m in mods {

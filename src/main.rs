@@ -1,9 +1,7 @@
-
-use chrono::{Days, Utc};
+// use chrono::{Days, Utc};
 use log::LevelFilter::Debug;
 
 use crate::flow::FlowConfig;
-
 
 pub mod flow;
 pub mod persistent;
@@ -14,6 +12,6 @@ async fn main() -> anyhow::Result<()> {
     env_logger::builder().filter_level(Debug).init();
     log::info!("Starting Tanvec AI CN...");
     let config = FlowConfig::from_env()?;
-    flow::run_translation_pipeline(config, Some(Utc::now() - Days::new(1)), None).await?;
+    flow::run_translation_pipeline(config, None, None).await?;
     Ok(())
 }
