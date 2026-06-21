@@ -12,6 +12,8 @@ async fn main() -> anyhow::Result<()> {
     env_logger::builder().filter_level(Debug).init();
     log::info!("Starting Tanvec AI CN...");
     let config = FlowConfig::from_env()?;
+    // dbg!(config);
+
     flow::run_translation_pipeline(config, None, None).await?;
     Ok(())
 }

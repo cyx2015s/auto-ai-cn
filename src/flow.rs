@@ -72,7 +72,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     persistent::persistent_via_file,
-    translation::{self, LangInfo, LocaleInfo},
+    translation::{self, LangInfo, LocaleInfo, ini_to_str},
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -281,76 +281,86 @@ fn find_common_root_prefix(names: &[String]) -> Option<String> {
 // Step 2: 加载外部参考文件
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 从 Factorio 游戏数据目录提取原版中英文对照表。
+/// 提取 Factorio 官方 mod 的中英文对照表。
 ///
-/// 读取 `<game_data>/base/locale/en/*.cfg` 和对应的 `zh-CN/*.cfg`，
-/// 生成 key → 中文翻译 的映射。只保留 base mod（原版）的翻译。
-///
-/// 格式：每行 `key=中文翻译`，section 信息保留在 key 的前缀中
-/// （如 `entity-name.iron-plate=铁板`）。
+/// 遍历 `core`, `base`, `quality`, `elevated-rails`, `space-age` 五个官方 mod 的
+/// `locale/en/*.cfg` 和对应 `zh-CN/*.cfg`，生成 key → 中文翻译 的映射。
+/// 后面的 mod（DLC）的翻译会覆盖前面的。
 pub fn extract_base_glossary(game_data_path: &Path) -> anyhow::Result<ini::Ini> {
-    let base_locale = game_data_path.join("base").join("locale");
-    let en_dir = base_locale.join("en");
-    let zh_dir = base_locale.join("zh-CN");
-
-    if !en_dir.exists() {
-        anyhow::bail!(
-            "游戏数据目录中未找到英文 locale: {:?}",
-            en_dir
-        );
-    }
+    const OFFICIAL_MODS: &[&str] = &["core", "base", "quality", "elevated-rails", "space-age"];
 
     let mut glossary = ini::Ini::new();
 
-    for entry in std::fs::read_dir(&en_dir)
-        .with_context(|| format!("无法读取英文 locale 目录: {:?}", en_dir))?
-    {
-        let entry = entry?;
-        let file_name = entry.file_name();
-        let file_name_str = file_name.to_string_lossy();
+    for mod_name in OFFICIAL_MODS {
+        let mod_locale = game_data_path.join(mod_name).join("locale");
+        let en_dir = mod_locale.join("en");
+        let zh_dir = mod_locale.join("zh-CN");
 
-        if !file_name_str.ends_with(".cfg") {
+        if !en_dir.exists() {
             continue;
         }
 
-        let en_content = std::fs::read_to_string(entry.path())?;
-        let en_ini = translation::str_to_ini(&en_content)?;
+        for entry in std::fs::read_dir(&en_dir)
+            .with_context(|| format!("无法读取 {} 的英文 locale: {:?}", mod_name, en_dir))?
+        {
+            let entry = entry?;
+            let file_name = entry.file_name();
+            let file_name_str = file_name.to_string_lossy();
 
-        // 读取对应中文文件
-        let zh_path = zh_dir.join(&file_name);
-        let zh_ini = if zh_path.exists() {
-            let zh_content = std::fs::read_to_string(&zh_path)?;
-            translation::str_to_ini(&zh_content)?
-        } else {
-            continue;
-        };
+            if !file_name_str.ends_with(".cfg") {
+                continue;
+            }
 
-        // 提取对照：对于每个 section/key，en value → zh-CN value
-        for (section, props) in en_ini.iter() {
-            if let Some(sec) = section && sec.contains("-name"){
-            let sec_prefix = format!("{}.", sec);
-            for (key, en_value) in props.iter() {
-                // 跳过纯数字或格式占位符
-                if en_value.is_empty()
-                    || en_value.chars().all(|c| c.is_ascii_digit() || c == '.' || c == ',')
-                {
+            let en_content = std::fs::read_to_string(entry.path())?;
+            let en_ini = translation::str_to_ini(&en_content)?;
+
+            let zh_path = zh_dir.join(&file_name);
+            let zh_ini = if zh_path.exists() {
+                let zh_content = std::fs::read_to_string(&zh_path)?;
+                translation::str_to_ini(&zh_content)?
+            } else {
+                continue;
+            };
+
+            for (section, props) in en_ini.iter() {
+                if section.is_none_or(|s| !s.contains("name")) {
                     continue;
                 }
-                if let Some(zh_value) = zh_ini
-                    .section(section)
-                    .and_then(|s| s.get(key))
-                {
-                    if !zh_value.is_empty() && zh_value != en_value {
-                        glossary
-                            .with_section(section)
-                            .set(key, zh_value);
+                for (key, en_value) in props.iter() {
+                    if en_value.is_empty()
+                        || en_value.chars().all(|c| c.is_ascii_digit() || c == '.' || c == ',')
+                    {
+                        continue;
+                    }
+                    if let Some(zh_value) = zh_ini
+                        .section(section)
+                        .and_then(|s| s.get(key))
+                    {
+                        if !zh_value.is_empty() && zh_value != en_value {
+                            glossary
+                                .with_section(section)
+                                .set(key, zh_value);
+                        }
                     }
                 }
-            }}
+            }
         }
     }
 
     Ok(glossary)
+}
+
+#[test]
+fn test_extract_base_glossary() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    let game_data_path = std::env::var("FACTORIO_DATA_PATH")
+        .map(PathBuf::from)
+        .expect("请设置 FACTORIO_DATA_PATH 环境变量指向游戏数据目录");
+    dbg!(&game_data_path);
+    let glossary = extract_base_glossary(&game_data_path).expect("提取对照表失败");
+    dbg!(&glossary);
+    println!("{}", ini_to_str(&glossary)?);
+    Ok(())
 }
 
 /// 加载或构建原版游戏中英文对照表（INI 格式）。
@@ -401,7 +411,7 @@ const DEFAULT_SYSTEM_PROMPT: &str = r#"你是一个专业的中文本地化翻�
 - 推荐使用 submit_translation 函数，传入 file_name + ini_content 一次性提交整个文件的翻译
 - ini_content 应为标准 INI 格式文本，保留原文的 section 结构和 key，只将 value 翻译为中文
 - 如果文件过大，可以按 section 分批提交（传入 section + entries）
-- 遇到虚构的专有名词（如模组特有的物品、实体、科技、星球名称等），请使用 submit_glossary 函数提交其翻译，格式为 term（英文）+ translation（中文），可选 reason 字段说明判断依据"#;
+- 遇到虚构的名称，请额外使用 submit_glossary 函数提交其翻译，格式为 term（英文）+ translation（中文），可选 reason 字段说明判断依据"#;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Step 3: 构建 Function Calling 的工具定义
