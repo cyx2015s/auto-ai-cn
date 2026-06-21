@@ -12,14 +12,15 @@ pub struct LangInfo {
     pub contents: indexmap::IndexMap<String, String>,
 }
 
-pub fn str_to_ini(s: &str) -> ini::Ini {
-    ini::Ini::load_from_str(s).unwrap()
+pub fn str_to_ini(s: &str) -> anyhow::Result<ini::Ini> {
+    ini::Ini::load_from_str(s).map_err(|e| anyhow::anyhow!("INI 解析失败: {}", e))
 }
 
-pub fn ini_to_str(ini: &ini::Ini) -> String {
+pub fn ini_to_str(ini: &ini::Ini) -> anyhow::Result<String> {
     let mut output = Vec::new();
-    ini.write_to(&mut output).unwrap();
-    String::from_utf8(output).unwrap()
+    ini.write_to(&mut output)
+        .map_err(|e| anyhow::anyhow!("INI 写入失败: {}", e))?;
+    String::from_utf8(output).map_err(|e| anyhow::anyhow!("INI 非 UTF-8: {}", e))
 }
 
 /// 返回新 ini 中新出现的内容，不包括被移除的内容
@@ -71,7 +72,8 @@ key3=value3
 [section2]
 keyA=valueA
 "#,
-        );
+        )
+        .unwrap();
         let new = str_to_ini(
             r#"[section1]
 key1=value1
@@ -79,7 +81,8 @@ key2=value2
 [section3]
 keyB=valueB
 "#,
-        );
+        )
+        .unwrap();
         let diff = diff_ini(&old, &new);
         // Add assertions to verify the expected behavior of the diff
         dbg!(diff);
@@ -94,7 +97,8 @@ key2=value2
 [section3]
 keyB=valueB
 "#,
-        );
+        )
+        .unwrap();
         let old = str_to_ini(
             r#"[section1]
 key1=value1
@@ -102,7 +106,8 @@ key3=value3
 [section2]
 keyA=valueA
 "#,
-        );
+        )
+        .unwrap();
         let mut diff = diff_ini(&old, &reference);
         diff.with_section(Some("section3")).set("keyB", "22222");
         diff.with_section(Some("section1")).set("key1", "22333");

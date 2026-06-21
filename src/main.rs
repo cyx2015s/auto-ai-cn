@@ -9,9 +9,11 @@ pub mod flow;
 pub mod persistent;
 pub mod translation;
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     env_logger::builder().filter_level(Debug).init();
     log::info!("Starting Tanvec AI CN...");
-    flow::run_translation_pipeline(FlowConfig::from_env().unwrap(), Some(Utc::now()- Days::new(1)), None).await.unwrap();
+    let config = FlowConfig::from_env()?;
+    flow::run_translation_pipeline(config, Some(Utc::now() - Days::new(1)), None).await?;
+    Ok(())
 }

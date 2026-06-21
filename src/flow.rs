@@ -82,9 +82,6 @@ use crate::{
 /// Mod 名称和版本的组合键
 pub type ModKey = (String, String);
 
-/// 缓存的翻译数据：key = mod 名称，value = LocaleInfo
-type TranslationCache = BTreeMap<String, LocaleInfo>;
-
 // ══════════════════════════════════════════════════════════════════════════════
 // 管道状态（上次运行时间）
 // ══════════════════════════════════════════════════════════════════════════════
@@ -285,7 +282,7 @@ pub fn load_base_locale(path: &Path) -> anyhow::Result<ini::Ini> {
     }
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("无法读取原版对照表文件: {:?}", path))?;
-    Ok(translation::str_to_ini(&content))
+    translation::str_to_ini(&content)
 }
 
 /// 加载翻译系统提示词
@@ -381,26 +378,17 @@ fn make_translation_tools() -> Vec<ToolObject> {
 // Step 4: 构建发送给 LLM 的提示词
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 单条翻译任务（需要 LLM 翻译的键值对）
-#[derive(Debug, Clone)]
-pub struct TranslationEntry {
-    pub file_name: String,
-    pub section: String,
-    pub key: String,
-    pub original: String,
-}
-
 /// 构建用户提示词内容。
 ///
 /// 包含：
 /// 1. 原版游戏中英文对照表（作为参考）
-/// 2. 需要翻译的内容列表
+/// 2. 需要翻译的内容（按文件分开的 INI 差异）
 /// 3. 如果提供了上次的翻译文件，附上参考
 pub fn build_user_prompt(
     base_locale: &ini::Ini,
-    entries: &[TranslationEntry],
+    file_diffs: &BTreeMap<String, ini::Ini>,
     previous_translations: Option<&LocaleInfo>,
-) -> String {
+) -> anyhow::Result<String> {
     let mut prompt = String::new();
 
     // 原版对照表
@@ -408,7 +396,7 @@ pub fn build_user_prompt(
         prompt.push_str("## 原版游戏术语对照参考\n\n");
         prompt.push_str("以下为原版游戏中的常见术语翻译，请保持翻译一致性：\n\n");
         prompt.push_str("```ini\n");
-        prompt.push_str(&translation::ini_to_str(base_locale));
+        prompt.push_str(&translation::ini_to_str(base_locale)?);
         prompt.push_str("```\n\n");
     }
 
@@ -428,38 +416,23 @@ pub fn build_user_prompt(
             prompt.push_str("```\n\n");
         }
 
-    // 当前翻译任务
+    // 当前翻译任务 — 按文件分开展示差异 INI
     prompt.push_str("## 当前翻译任务\n\n");
     prompt.push_str(
-        "请将以下英文文本翻译为简体中文，按文件分 section 调用 submit_translation 函数提交：\n\n",
+        "请将以下各文件的 INI 格式英文文本翻译为简体中文，保持 section 结构和 key 不变，只翻译 value：\n\n",
     );
 
-    // 按文件和 section 分组展示
-    let mut grouped: BTreeMap<String, BTreeMap<String, Vec<&TranslationEntry>>> = BTreeMap::new();
-    for entry in entries {
-        grouped
-            .entry(entry.file_name.clone())
-            .or_default()
-            .entry(entry.section.clone())
-            .or_default()
-            .push(entry);
-    }
-
-    for (file_name, sections) in &grouped {
+    for (file_name, diff_ini) in file_diffs {
         prompt.push_str(&format!("### 文件: {}\n\n", file_name));
-        for (section, sec_entries) in sections {
-            prompt.push_str(&format!("#### Section: [{}]\n\n", section));
-            prompt.push_str("| key | 英文原文 |\n");
-            prompt.push_str("|-----|----------|\n");
-            for e in sec_entries {
-                prompt.push_str(&format!("| `{}` | {} |\n", e.key, e.original));
-            }
-            prompt.push('\n');
-        }
+        prompt.push_str("```ini\n");
+        prompt.push_str(&translation::ini_to_str(diff_ini)?);
+        prompt.push_str("```\n\n");
     }
 
-    prompt.push_str("请现在开始翻译，按文件按 section 调用 submit_translation 函数逐批提交。\n");
-    prompt
+    prompt.push_str(
+        "请为每个文件分别调用 submit_translation 函数，传入 file_name + ini_content 提交该文件的完整翻译。\n",
+    );
+    Ok(prompt)
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -550,7 +523,7 @@ pub async fn call_llm_for_translation(
 
                                 // 模式 1：整文件 INI 文本提交
                                 if let Some(ref ini_content) = submitted.ini_content {
-                                    let ini = translation::str_to_ini(ini_content);
+                                    let ini = translation::str_to_ini(ini_content)?;
                                     for (sec, props) in ini.iter() {
                                         let sec_name = sec.unwrap_or("");
                                         for (k, v) in props.iter() {
@@ -770,51 +743,49 @@ async fn process_mod(
             lang_info
                 .contents
                 .iter()
-                .map(|(fname, content)| (fname.clone(), translation::str_to_ini(content)))
+                .filter_map(|(fname, content)| {
+                    translation::str_to_ini(content)
+                        .ok()
+                        .map(|ini| (fname.clone(), ini))
+                })
                 .collect()
         })
         .unwrap_or_default();
 
-    // 4. 构建翻译任务条目：只翻译 en → zh-CN
-    let mut entries: Vec<TranslationEntry> = Vec::new();
+    // 4. 构建翻译任务：每个 en 文件对应一个差异 INI（不合并，保持文件边界）
+    let mut file_diffs: BTreeMap<String, ini::Ini> = BTreeMap::new();
+    let mut total_entries = 0usize;
 
     for (file_name, content) in &source_lang_info.contents {
-        let current_ini = translation::str_to_ini(content);
+        let current_ini = translation::str_to_ini(content)?;
 
-        // 确定需要翻译的条目：对比新旧 en 文件，只取变更部分
-        let to_translate = if let Some(old_target_ini) = old_target_ini_by_file.get(file_name) {
+        let diff = if let Some(old_target_ini) = old_target_ini_by_file.get(file_name) {
             translation::diff_ini(old_target_ini, &current_ini)
         } else {
-            // 没有缓存，全部都需要翻译
             current_ini.clone()
         };
 
-        for (section, props) in to_translate.iter() {
-            let section_name = section.unwrap_or("(global)");
-            for (key, value) in props.iter() {
-                entries.push(TranslationEntry {
-                    file_name: file_name.clone(),
-                    section: section_name.to_string(),
-                    key: key.to_string(),
-                    original: value.to_string(),
-                });
-            }
+        if diff.is_empty() {
+            continue;
         }
+        total_entries += diff.iter().flat_map(|(_, props)| props.iter()).count();
+        file_diffs.insert(file_name.clone(), diff);
     }
 
-    if entries.is_empty() {
+    if file_diffs.is_empty() {
         info!("  ↳ 没有需要翻译的新内容，跳过");
         return Ok(());
     }
     info!(
-        "  ↳ 需要翻译 {} 个条目 ({} → {})",
-        entries.len(),
+        "  ↳ 需要翻译 {} 个文件 / {} 个条目 ({} → {})",
+        file_diffs.len(),
+        total_entries,
         SOURCE_LANG,
         TARGET_LANG
     );
 
     // 5. 构建提示词并调用 LLM
-    let user_prompt = build_user_prompt(base_locale, &entries, cached_locale.as_ref());
+    let user_prompt = build_user_prompt(base_locale, &file_diffs, cached_locale.as_ref())?;
 
     info!("  ↳ 调用 LLM 进行翻译...");
     let llm_translation =
@@ -836,7 +807,7 @@ async fn process_mod(
     };
 
     for (file_name, content) in &source_lang_info.contents {
-        let reference_ini = translation::str_to_ini(content);
+        let reference_ini = translation::str_to_ini(content)?;
         let old_ini = old_target_ini_by_file.get(file_name);
 
         let merged_ini = translation::merge_ini(
@@ -844,9 +815,10 @@ async fn process_mod(
             old_ini.unwrap_or(&ini::Ini::new()),
             &llm_translation,
         );
+        let merged_str = translation::ini_to_str(&merged_ini)?;
         merged_target_lang
             .contents
-            .insert(file_name.clone(), translation::ini_to_str(&merged_ini));
+            .insert(file_name.clone(), merged_str);
     }
 
     // 构建最终 LocaleInfo：保留其他语言不变，更新 zh-CN
