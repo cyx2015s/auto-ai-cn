@@ -25,6 +25,16 @@ where
     Persistent::new(value, serializer)
 }
 
+pub fn persistent_via_file_with_default<T, P>(
+    path: P,
+) -> Persistent<T, serde_json::Serializer<std::fs::File>>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned + Default,
+    P: AsRef<std::path::Path>,
+{
+    persistent_via_file(T::default(), path)
+}
+
 pub fn persistent_via_file<T, P>(
     value: T,
     path: P,
@@ -33,11 +43,6 @@ where
     T: serde::Serialize + serde::de::DeserializeOwned,
     P: AsRef<std::path::Path>,
 {
-    let existing = std::fs::File::open(&path)
-        .ok()
-        .and_then(|f| serde_json::from_reader(&f).ok());
-
-    let value = existing.unwrap_or(value);
     let file = std::fs::OpenOptions::new()
         .write(true)
         .truncate(true)
