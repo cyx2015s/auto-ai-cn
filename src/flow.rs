@@ -144,9 +144,7 @@ impl FlowConfig {
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("data/system_prompt.txt"));
 
-        let game_data_path = std::env::var("FACTORIO_DATA_PATH")
-            .ok()
-            .map(PathBuf::from);
+        let game_data_path = std::env::var("FACTORIO_DATA_PATH").ok().map(PathBuf::from);
 
         let deepseek_key = std::env::var("DEEPSEEK_KEY").context("环境变量 DEEPSEEK_KEY 未设置")?;
 
@@ -328,18 +326,15 @@ pub fn extract_base_glossary(game_data_path: &Path) -> anyhow::Result<ini::Ini> 
                 }
                 for (key, en_value) in props.iter() {
                     if en_value.is_empty()
-                        || en_value.chars().all(|c| c.is_ascii_digit() || c == '.' || c == ',')
+                        || en_value
+                            .chars()
+                            .all(|c| c.is_ascii_digit() || c == '.' || c == ',')
                     {
                         continue;
                     }
-                    if let Some(zh_value) = zh_ini
-                        .section(section)
-                        .and_then(|s| s.get(key))
-                    {
+                    if let Some(zh_value) = zh_ini.section(section).and_then(|s| s.get(key)) {
                         if !zh_value.is_empty() && zh_value != en_value {
-                            glossary
-                                .with_section(section)
-                                .set(key, zh_value);
+                            glossary.with_section(section).set(key, zh_value);
                         }
                     }
                 }
@@ -801,87 +796,90 @@ pub async fn call_llm_for_translation(
                     let fn_name = tool_call.function.name.as_str();
                     match fn_name {
                         "submit_translation" => {
+                            // 解析翻译数据
+                            match serde_json::from_str::<SubmittedTranslation>(
+                                &tool_call.function.arguments,
+                            ) {
+                                Ok(submitted) => {
+                                    let mut merged_count = 0usize;
 
-                    // 解析翻译数据
-                    match serde_json::from_str::<SubmittedTranslation>(
-                        &tool_call.function.arguments,
-                    ) {
-                        Ok(submitted) => {
-                            let mut merged_count = 0usize;
-
-                            // 模式 1：整文件 INI 文本提交
-                            if let Some(ref ini_content) = submitted.ini_content {
-                                let ini = translation::str_to_ini(ini_content)?;
-                                for (sec, props) in ini.iter() {
-                                    let sec_name = sec.unwrap_or("");
-                                    for (k, v) in props.iter() {
-                                        result_ini.with_section(Some(sec_name)).set(k, v);
-                                        merged_count += 1;
+                                    // 模式 1：整文件 INI 文本提交
+                                    if let Some(ref ini_content) = submitted.ini_content {
+                                        let ini = translation::str_to_ini(ini_content)?;
+                                        for (sec, props) in ini.iter() {
+                                            let sec_name = sec.unwrap_or("");
+                                            for (k, v) in props.iter() {
+                                                result_ini.with_section(Some(sec_name)).set(k, v);
+                                                merged_count += 1;
+                                            }
+                                        }
+                                        debug!(
+                                            "收到整文件翻译: file={}, sections={}, entries={}",
+                                            submitted.file_name,
+                                            ini.iter().count(),
+                                            merged_count
+                                        );
+                                        has_valid_call = true;
+                                        messages.push(MessageRequest::Tool(
+                                            ToolMessageRequest::new(
+                                                &format!(
+                                                    "已收到 {} 的整文件翻译（{} 条）",
+                                                    submitted.file_name, merged_count
+                                                ),
+                                                &tool_call.id,
+                                            ),
+                                        ));
                                     }
-                                }
-                                debug!(
-                                    "收到整文件翻译: file={}, sections={}, entries={}",
-                                    submitted.file_name,
-                                    ini.iter().count(),
-                                    merged_count
-                                );
-                                has_valid_call = true;
-                                messages.push(MessageRequest::Tool(ToolMessageRequest::new(
-                                    &format!(
-                                        "已收到 {} 的整文件翻译（{} 条）",
-                                        submitted.file_name, merged_count
-                                    ),
-                                    &tool_call.id,
-                                )));
-                            }
-                            // 模式 2：按 section 提交
-                            else if let (Some(section), Some(entries)) =
-                                (&submitted.section, &submitted.entries)
-                            {
-                                for entry in entries {
-                                    result_ini
-                                        .with_section(Some(section.as_str()))
-                                        .set(&entry.key, &entry.translation);
-                                    merged_count += 1;
-                                }
-                                debug!(
-                                    "收到翻译: file={}, section={}, entries={}",
-                                    submitted.file_name, section, merged_count
-                                );
-                                has_valid_call = true;
-                                messages.push(MessageRequest::Tool(ToolMessageRequest::new(
-                                    &format!(
-                                        "已收到 {} 的 {} 下 {} 条翻译",
-                                        submitted.file_name, section, merged_count
-                                    ),
-                                    &tool_call.id,
-                                )));
-                            } else {
-                                // 格式无效：没有 ini_content 也没有 section+entries
-                                warn!(
-                                    "翻译提交格式无效: file={}, 缺少 ini_content 或 (section+entries)",
-                                    submitted.file_name
-                                );
-                                messages.push(MessageRequest::Tool(ToolMessageRequest::new(
+                                    // 模式 2：按 section 提交
+                                    else if let (Some(section), Some(entries)) =
+                                        (&submitted.section, &submitted.entries)
+                                    {
+                                        for entry in entries {
+                                            result_ini
+                                                .with_section(Some(section.as_str()))
+                                                .set(&entry.key, &entry.translation);
+                                            merged_count += 1;
+                                        }
+                                        debug!(
+                                            "收到翻译: file={}, section={}, entries={}",
+                                            submitted.file_name, section, merged_count
+                                        );
+                                        has_valid_call = true;
+                                        messages.push(MessageRequest::Tool(
+                                            ToolMessageRequest::new(
+                                                &format!(
+                                                    "已收到 {} 的 {} 下 {} 条翻译",
+                                                    submitted.file_name, section, merged_count
+                                                ),
+                                                &tool_call.id,
+                                            ),
+                                        ));
+                                    } else {
+                                        // 格式无效：没有 ini_content 也没有 section+entries
+                                        warn!(
+                                            "翻译提交格式无效: file={}, 缺少 ini_content 或 (section+entries)",
+                                            submitted.file_name
+                                        );
+                                        messages.push(MessageRequest::Tool(ToolMessageRequest::new(
                                         &format!(
                                             "格式无效：请提供 ini_content（整文件）或 section+entries（按 section）"
                                         ),
                                         &tool_call.id,
                                     )));
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "解析翻译数据失败: {} — 原始参数: {}",
+                                        e, tool_call.function.arguments
+                                    );
+                                    messages.push(MessageRequest::Tool(ToolMessageRequest::new(
+                                        &format!("解析失败: {}", e),
+                                        &tool_call.id,
+                                    )));
+                                }
                             }
                         }
-                        Err(e) => {
-                            warn!(
-                                "解析翻译数据失败: {} — 原始参数: {}",
-                                e, tool_call.function.arguments
-                            );
-                            messages.push(MessageRequest::Tool(ToolMessageRequest::new(
-                                &format!("解析失败: {}", e),
-                                &tool_call.id,
-                            )));
-                        }
-                    }
-                }
                         "submit_glossary" => {
                             match serde_json::from_str::<SubmittedGlossaryEntry>(
                                 &tool_call.function.arguments,
@@ -898,7 +896,10 @@ pub async fn call_llm_for_translation(
                                     );
                                     has_valid_call = true;
                                     messages.push(MessageRequest::Tool(ToolMessageRequest::new(
-                                        &format!("术语已记录: {} → {}", entry.term, entry.translation),
+                                        &format!(
+                                            "术语已记录: {} → {}",
+                                            entry.term, entry.translation
+                                        ),
                                         &tool_call.id,
                                     )));
                                 }
@@ -1137,10 +1138,9 @@ async fn process_mod(
                     old_ini.unwrap_or(&ini::Ini::new()),
                     &builtin_ini,
                 );
-                merged_target.contents.insert(
-                    file_name.clone(),
-                    translation::ini_to_str(&merged_ini)?,
-                );
+                merged_target
+                    .contents
+                    .insert(file_name.clone(), translation::ini_to_str(&merged_ini)?);
             }
 
             merged
@@ -1151,8 +1151,7 @@ async fn process_mod(
             cached_locale.clone()
         };
 
-    let user_prompt =
-        build_user_prompt(base_locale, &file_diffs, context_locale.as_ref())?;
+    let user_prompt = build_user_prompt(base_locale, &file_diffs, context_locale.as_ref())?;
 
     info!("  ↳ 调用 LLM 进行翻译...");
     let llm_translation =
