@@ -1,5 +1,3 @@
-use crate::Config;
-
 use chrono::{DateTime, Utc};
 
 // ============================================================================
@@ -14,6 +12,13 @@ const THUMBNAIL_BASE: &str = "https://assets-mod.factorio.com";
 // ============================================================================
 // 客户端
 // ============================================================================
+
+/// API 认证凭据
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub user: String,
+    pub token: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct FactorioWebClient {

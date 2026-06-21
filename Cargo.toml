@@ -7,3 +7,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+log = "0.4.33"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+chrono = { version = "0.4.45", features = ["serde"] }
+anyhow = "1.0.102"
+factorio-api = { path = "factorio-api" }
