@@ -13,3 +13,5 @@ serde_json = "1.0.150"
 chrono = { version = "0.4.45", features = ["serde"] }
 anyhow = "1.0.102"
 factorio-api = { path = "factorio-api" }
+rust-ini = "0.21.3"
+indexmap = { version = "2.14.0", features = ["serde"] }
