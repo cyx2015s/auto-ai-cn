@@ -1,5 +1,5 @@
 [workspace]
-members = ["factorio-api", "pack-mod"]
+members = ["factorio-api"]
 
 [package]
 name = "tanvec-ai-cn"
