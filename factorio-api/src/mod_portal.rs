@@ -8,6 +8,7 @@ const MOD_API_BASE: &str = "https://mods.factorio.com/api";
 const MOD_BASE: &str = "https://mods.factorio.com";
 const AUTH_BASE: &str = "https://auth.factorio.com";
 const THUMBNAIL_BASE: &str = "https://assets-mod.factorio.com";
+const MOD_API_V2_BASE: &str = "https://mods.factorio.com/api/v2";
 
 // ============================================================================
 // 客户端
@@ -809,6 +810,86 @@ impl FactorioWebClient {
             .filter(|e| e.released_at_dt().is_some_and(|dt| dt >= since))
             .collect();
         Ok(filtered)
+    }
+
+    // ------------------------------------------------------------------
+    // POST /api/v2/mods/releases/init_upload — 上传 mod
+    // ------------------------------------------------------------------
+
+    /// 上传 mod zip 到 Mod Portal（使用 API Key 认证）。
+    ///
+    /// 流程：
+    /// 1. 调用 `init_upload` 获取上传 URL
+    /// 2. 如果 mod 尚未发布，回退到 `init_publish`
+    /// 3. POST zip 文件到上传 URL
+    ///
+    /// `api_key` 从 https://factorio.com/profile 获取的个人 API Key。
+    pub async fn upload_mod(
+        &self,
+        api_key: &str,
+        mod_name: &str,
+        zip_data: &[u8],
+    ) -> anyhow::Result<()> {
+        let auth_header = format!("Bearer {}", api_key);
+
+        // Step 1: init_upload
+        let init_url = format!("{MOD_API_V2_BASE}/mods/releases/init_upload");
+        let (upload_url, is_publish) = match self
+            .client
+            .post(&init_url)
+            .header("Authorization", &auth_header)
+            .form(&[("mod", mod_name)])
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                let json: serde_json::Value = resp.json().await?;
+                (json["upload_url"].as_str().unwrap_or("").to_string(), false)
+            }
+            _ => {
+                // Step 2: 回退 — mod 可能尚未发布，使用 init_publish
+                let publish_url = format!("{MOD_API_V2_BASE}/mods/init_publish");
+                let resp = self
+                    .client
+                    .post(&publish_url)
+                    .header("Authorization", &auth_header)
+                    .form(&[("mod", mod_name)])
+                    .send()
+                    .await?;
+                if !resp.status().is_success() {
+                    let text = resp.text().await.unwrap_or_default();
+                    anyhow::bail!("init_publish 失败: {}", text);
+                }
+                let json: serde_json::Value = resp.json().await?;
+                (json["upload_url"].as_str().unwrap_or("").to_string(), true)
+            }
+        };
+
+        if upload_url.is_empty() {
+            anyhow::bail!(
+                "{} 失败：未返回 upload_url",
+                if is_publish {
+                    "init_publish"
+                } else {
+                    "init_upload"
+                }
+            );
+        }
+
+        // Step 3: 上传 zip
+        let file_part = reqwest::multipart::Part::bytes(zip_data.to_vec())
+            .file_name(format!("{}.zip", mod_name))
+            .mime_str("application/zip")?;
+
+        let form = reqwest::multipart::Form::new().part("file", file_part);
+        let resp = self.client.post(&upload_url).multipart(form).send().await?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("上传失败: {}", text)
+        }
     }
 }
 
