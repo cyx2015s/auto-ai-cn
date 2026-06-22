@@ -123,9 +123,10 @@ pub fn pack_all_to_one_mod(
         "name": mod_pack_name,
         "version": today,
         "title": "切向量的 AI 汉化",
-        "factorio_version": "2.0",
-        "dependencies": ["base >= 2.0"],
-        "description": format!("包含 {} 个模组的 AI 中文翻译。", packed_count)
+        "factorio_version": "2.1",
+        "dependencies": ["base >= 2.1"],
+        "author": "tanvec",
+        "description": format!("包含 {} 个模组的 AI 中文翻译。在模组官网上查看详细更新信息。", packed_count)
     });
     let info_path = format!("{}/info.json", pack_name);
     zip_writer.start_file(&info_path, options)?;

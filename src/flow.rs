@@ -551,7 +551,7 @@ ghost表示没有完成建筑的建筑时，翻译为「虚影」。
 
 - 使用 submit_translation 函数，传入 file_name + ini_content 一次性提交整个文件的翻译
 - ini_content 应为标准 INI 格式文本，保留原文的 section 结构和 key，只将 value 翻译为中文
-- 如果文件过大，可以按 section 分批提交（传入 section + entries）
+- 如果文件过大，可以按 section 分批提交（传入 section + entries），单个 section 也可以划分为多次函数调用提交
 - 遇到虚构的名称，请额外使用 submit_glossary 函数提交其翻译，格式为 term（英文）+ translation（中文），可选 reason 字段说明判断依据"#;
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -812,9 +812,8 @@ pub async fn call_llm_for_translation(
                                     if let Some(ref ini_content) = submitted.ini_content {
                                         let ini = translation::str_to_ini(ini_content)?;
                                         for (sec, props) in ini.iter() {
-                                            let sec_name = sec.unwrap_or("");
                                             for (k, v) in props.iter() {
-                                                result_ini.with_section(Some(sec_name)).set(k, v);
+                                                result_ini.with_section(sec).set(k, v);
                                                 merged_count += 1;
                                             }
                                         }
@@ -1312,7 +1311,7 @@ pub async fn run_translation_pipeline(
     mod_names: Option<&[String]>,
 ) -> anyhow::Result<()> {
     // 加载上次运行时间
-    let state_path = config.cache_dir.join("_pipeline_state.json");
+    let state_path = config.cache_dir.join(".pipeline_state");
     let mut state: PipelineState = if state_path.exists() {
         std::fs::read_to_string(&state_path)
             .ok()
@@ -1352,7 +1351,7 @@ pub async fn run_translation_pipeline(
     let system_prompt = load_system_prompt(&config.system_prompt_path)?;
 
     // 加载/创建 AI 术语表（跨模组专有名词翻译，AI 可提交新条目）
-    let glossary_path = config.cache_dir.join("_ai_glossary.json");
+    let glossary_path = config.cache_dir.join(".ai_glossary");
     let mut ai_glossary: ini::Ini = if glossary_path.exists() {
         std::fs::read_to_string(&glossary_path)
             .ok()
