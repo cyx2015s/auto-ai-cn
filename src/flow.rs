@@ -787,11 +787,12 @@ pub async fn call_llm_for_translation(
         let msg = resp.choices[0].message.as_ref();
 
         if let Some(msg) = msg
-            && msg.tool_calls.is_some()
+            && let Some(ref tool_calls) = msg.tool_calls
+            && !tool_calls.is_empty()
         {
             messages.push(MessageRequest::Assistant(msg.clone()));
 
-            if let Some(ref tool_calls) = msg.tool_calls {
+            {
                 let mut has_valid_call = false;
 
                 for tool_call in tool_calls {
@@ -1243,18 +1244,20 @@ async fn process_mod(
 /// - `config`: 管道配置
 /// - `since`: 时间起点（None = 从上次运行时间开始）
 /// - `limit`: 最大处理 mod 数量（None = 无限制）
+/// - `mod_names`: 手动指定的 mod 名称列表（None = 自动获取更新的 mod）
 ///
 /// ## 流程
 ///
 /// 1. 初始化 Factorio 和 DeepSeek 客户端
 /// 2. 加载外部参考文件
-/// 3. 获取自 `last_run` 以来更新的 mod 列表
+/// 3. 获取待处理的 mod 列表（自动或手动指定）
 /// 4. 逐个处理每个 mod
-/// 5. 更新 last_run 时间
+/// 5. 更新 last_run 时间（仅自动模式）
 pub async fn run_translation_pipeline(
     config: FlowConfig,
     since: Option<DateTime<Utc>>,
-    limit: Option<u64>,
+    limit: Option<usize>,
+    mod_names: Option<&[String]>,
 ) -> anyhow::Result<()> {
     // 加载上次运行时间
     let state_path = config.cache_dir.join("_pipeline_state.json");
@@ -1309,17 +1312,42 @@ pub async fn run_translation_pipeline(
 
     info!("外部参考文件加载完成");
 
-    // 获取更新的 mod 列表
-    let updated_mods = fa_client
-        .get_mods_updated_since(effective_since, &config.game_version, Some(100), limit)
-        .await
-        .context("获取更新的 mod 列表失败")?;
+    // 获取待处理的 mod 列表
+    let updated_mods: Vec<factorio_api::ResultEntry> = if let Some(names) = mod_names {
+        // 手动指定 mod
+        if names.is_empty() {
+            info!("未指定任何 mod，退出");
+            return Ok(());
+        }
+        let name_strs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+        let resp = fa_client
+            .mods_by_names(&name_strs)
+            .await
+            .context("获取指定 mod 信息失败")?;
+        info!(
+            "手动指定 {} 个 mod，找到 {} 个",
+            names.len(),
+            resp.results.len()
+        );
+        resp.results
+    } else {
+        // 自动获取更新的 mod
+        let page_size = limit.map(|l| l.min(100) as u64);
+        let max_size = limit.map(|l| l as u64);
+        let mods = fa_client
+            .get_mods_updated_since(effective_since, &config.game_version, page_size, max_size)
+            .await
+            .context("获取更新的 mod 列表失败")?;
+        info!("发现 {} 个更新的 mod", mods.len());
+        let limit = limit.unwrap_or(usize::MAX);
+        mods.into_iter().take(limit).collect()
+    };
 
-    info!("发现 {} 个更新的 mod", updated_mods.len());
-
+    let is_auto = mod_names.is_none();
     let mut processed = 0;
     for mod_entry in &updated_mods {
-        if let Some(limit) = limit
+        if is_auto
+            && let Some(limit) = limit
             && processed >= limit
         {
             info!("已达到处理上限 ({})，停止", limit);
@@ -1353,12 +1381,22 @@ pub async fn run_translation_pipeline(
         }
     }
 
-    // 更新上次运行时间（使用当前时间）
-    let now = Utc::now();
-    state.last_run = now;
-    std::fs::create_dir_all(&config.cache_dir)?;
-    {
-        _ = persistent_via_file(state, &state_path);
+    // 更新上次运行时间（仅在自动模式下）
+    if is_auto {
+        let now = Utc::now();
+        state.last_run = now;
+        std::fs::create_dir_all(&config.cache_dir)?;
+        {
+            _ = persistent_via_file(state, &state_path);
+        }
+        info!(
+            "翻译管道完成 — 处理了 {}/{} 个 mod，last_run 更新为: {}",
+            processed,
+            updated_mods.len(),
+            now.format("%Y-%m-%d %H:%M:%S")
+        );
+    } else {
+        info!("翻译完成 — 处理了 {} 个 mod", processed);
     }
 
     // 保存 AI 术语表
@@ -1367,13 +1405,6 @@ pub async fn run_translation_pipeline(
         std::fs::write(&glossary_path, &glossary_str)
             .with_context(|| format!("无法保存 AI 术语表: {:?}", glossary_path))?;
     }
-
-    info!(
-        "翻译管道完成 — 处理了 {}/{} 个 mod，last_run 更新为: {}",
-        processed,
-        updated_mods.len(),
-        now.format("%Y-%m-%d %H:%M:%S")
-    );
 
     Ok(())
 }
