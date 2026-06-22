@@ -950,6 +950,9 @@ pub async fn call_llm_for_translation(
             messages.push(MessageRequest::Assistant(msg.clone()));
             debug!("LLM 最终回复: {}", msg.content);
         }
+        if resp.choices[0].finish_reason == FinishReason::Stop {
+            break;
+        }
     }
 
     if loop_count >= MAX_LOOPS {
