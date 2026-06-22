@@ -5,3 +5,7 @@
 .codewhale
 
 /cache
+
+/output
+
+.vscode
