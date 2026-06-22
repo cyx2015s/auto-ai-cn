@@ -1117,7 +1117,7 @@ async fn process_mod(
         file_diffs.insert(file_name.clone(), diff);
     }
 
-    if file_diffs.is_empty() {
+    if file_diffs.is_empty() || total_entries == 0 {
         info!("  ↳ 没有需要翻译的新内容，跳过");
         return Ok(());
     }
@@ -1204,6 +1204,53 @@ async fn process_mod(
         merged_target_lang
             .contents
             .insert(file_name.clone(), merged_str);
+    }
+
+    // 7. 完整性检查：逐文件对比 en 原文，找出遗漏的 key 并让 AI 补充
+    const MAX_INTEGRITY_ROUNDS: usize = 2;
+    for round in 0..MAX_INTEGRITY_ROUNDS {
+        let mut missing_diffs: BTreeMap<String, ini::Ini> = BTreeMap::new();
+        for (file_name, content) in &source_lang_info.contents {
+            let reference_ini = translation::str_to_ini(content)?;
+            let merged_ini = merged_target_lang.contents.get(file_name)
+                .map(|s| translation::str_to_ini(s)).transpose()?.unwrap_or_default();
+            let missing = translation::diff_ini_keys_only(&merged_ini, &reference_ini);
+            if !missing.is_empty() {
+                missing_diffs.insert(file_name.clone(), missing);
+            }
+        }
+        if missing_diffs.is_empty() {
+            info!("  ↳ 完整性检查通过 (第 {} 轮)", round + 1);
+            break;
+        }
+        let missing_count: usize = missing_diffs.values()
+            .flat_map(|ini| ini.iter().flat_map(|(_, p)| p.iter())).count();
+        if missing_count == 0 {
+            info!("  ↳ 完整性检查通过 (第 {} 轮)", round + 1);
+            break;
+        }
+        info!("  ↳ 发现 {} 个遗漏条目 (第 {} 轮)，让 AI 补充...", missing_count, round + 1);
+        info!("  ↳ 遗漏内容详细信息: {:?}", &missing_diffs);
+        let supplement_prompt = format!(
+            "## 补充翻译任务\n\n以下键在上轮翻译中被遗漏，请补充翻译：\n\n{}",
+            build_user_prompt(base_locale, &missing_diffs, None)?
+        );
+        let supplement_result = call_llm_for_translation(
+            client_deepseek, system_prompt, &supplement_prompt, glossary,
+        ).await?;
+        if supplement_result.is_empty() {
+            warn!("  ↳ AI 未返回补充翻译，停止完整性检查");
+            break;
+        }
+        for (file_name, content) in &source_lang_info.contents {
+            let reference_ini = translation::str_to_ini(content)?;
+            let old_ini = merged_target_lang.contents.get(file_name)
+                .map(|s| translation::str_to_ini(s)).transpose()?.unwrap_or_default();
+            let merged_ini = translation::merge_ini(&reference_ini, &old_ini, &supplement_result);
+            merged_target_lang.contents.insert(
+                file_name.clone(), translation::ini_to_str(&merged_ini)?,
+            );
+        }
     }
 
     // 构建最终 LocaleInfo：保留其他语言不变，更新 zh-CN 和 en 原文

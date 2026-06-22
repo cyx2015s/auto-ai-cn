@@ -42,6 +42,23 @@ pub fn diff_ini(old: &ini::Ini, new: &ini::Ini) -> ini::Ini {
     diff
 }
 
+pub fn diff_ini_keys_only(old: &ini::Ini, new: &ini::Ini) -> ini::Ini {
+    let mut diff = ini::Ini::new();
+    for (sec, prop) in new.iter() {
+        let old_prop = old.section(sec);
+        for (k, v) in prop.iter() {
+            if old_prop
+                .and_then(|p| p.get(k))
+                .is_some()
+            {
+                continue;
+            }
+            diff.with_section(sec).set(k, v);
+        }
+    }
+    diff
+}
+
 /// 根据参考文件 A，已有文件 B，将差分文件 C 合并到 B 上，同时删除 B 中被 A 移除的内容
 pub fn merge_ini(reference: &ini::Ini, old: &ini::Ini, diff: &ini::Ini) -> ini::Ini {
     let mut merged = ini::Ini::new();
