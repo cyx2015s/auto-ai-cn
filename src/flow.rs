@@ -334,7 +334,7 @@ pub fn extract_base_glossary(game_data_path: &Path) -> anyhow::Result<ini::Ini> 
                     }
                     if let Some(zh_value) = zh_ini.section(section).and_then(|s| s.get(key)) {
                         if !zh_value.is_empty() && zh_value != en_value {
-                            glossary.with_section(section).set(key, zh_value);
+                            glossary.with_general_section().set(en_value, zh_value);
                         }
                     }
                 }
