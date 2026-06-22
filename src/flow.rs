@@ -72,7 +72,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     persistent::persistent_via_file,
-    translation::{self, LangInfo, LocaleInfo, ini_to_str},
+    translation::{self, LangInfo, LocaleInfo},
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -354,7 +354,7 @@ fn test_extract_base_glossary() -> anyhow::Result<()> {
     dbg!(&game_data_path);
     let glossary = extract_base_glossary(&game_data_path).expect("提取对照表失败");
     dbg!(&glossary);
-    println!("{}", ini_to_str(&glossary)?);
+    println!("{}", translation::ini_to_str(&glossary)?);
     Ok(())
 }
 
@@ -783,10 +783,12 @@ pub async fn call_llm_for_translation(
             .context("LLM API 请求失败")?
             .must_response();
 
-        if resp.choices[0].finish_reason == FinishReason::ToolCalls
-            && let Some(ref msg) = resp.choices[0].message
+        // 无论 finish_reason 是什么，只要 assistant 消息带 tool_calls 就处理
+        let msg = resp.choices[0].message.as_ref();
+
+        if let Some(msg) = msg
+            && msg.tool_calls.is_some()
         {
-            // 记录 assistant 的消息
             messages.push(MessageRequest::Assistant(msg.clone()));
 
             if let Some(ref tool_calls) = msg.tool_calls {
@@ -923,8 +925,13 @@ pub async fn call_llm_for_translation(
                 }
 
                 if !has_valid_call {
-                    // 如果有 tool_call 但都不是有效的翻译提交，让 LLM 继续
+                    // 所有 tool_call 解析失败，让 LLM 重试
                     continue;
+                }
+
+                // 如果 finish_reason 是 Stop，不再追问
+                if resp.choices[0].finish_reason == FinishReason::Stop {
+                    break;
                 }
 
                 // 询问 LLM 是否还有更多翻译
@@ -935,25 +942,13 @@ pub async fn call_llm_for_translation(
             }
         }
 
-        // finish_reason == Stop 或其他
-        // 检查是否还有 tool_calls（某些模型可能在 stop 时附带 tool calls）
-        if let Some(ref msg) = resp.choices[0].message {
+        // 没有 tool_calls：如果已有 assistant 文本回复，结束；否则是纯文本响应
+        if let Some(msg) = msg
+            && !msg.content.is_empty()
+        {
             messages.push(MessageRequest::Assistant(msg.clone()));
-            if msg.tool_calls.is_some() {
-                // 有 tool calls 但 finish_reason 是 Stop，再发一次请求
-                continue;
-            }
+            debug!("LLM 最终回复: {}", msg.content);
         }
-
-        // 真正结束
-        let content = resp.choices[0]
-            .message
-            .as_ref()
-            .map(|m| m.content.as_str())
-            .unwrap_or("");
-
-        debug!("LLM 最终回复: {}", content);
-        break;
     }
 
     if loop_count >= MAX_LOOPS {
