@@ -1062,6 +1062,7 @@ async fn process_mod(
     let source_lang_info = &current_locale.contents[SOURCE_LANG];
 
     // 获取旧的 zh-CN 缓存（用于差异计算和合并）
+    // 旧的 zh-CN 翻译（用于上下文参考和合并）
     let old_target_ini_by_file: BTreeMap<String, ini::Ini> = cached_locale
         .as_ref()
         .and_then(|c| c.contents.get(TARGET_LANG))
@@ -1078,15 +1079,32 @@ async fn process_mod(
         })
         .unwrap_or_default();
 
-    // 4. 构建翻译任务：每个 en 文件对应一个差异 INI（不合并，保持文件边界）
+    // 旧的 en 原文（用于 diff 计算：比较新旧 en，只翻译变更部分）
+    let old_source_ini_by_file: BTreeMap<String, ini::Ini> = cached_locale
+        .as_ref()
+        .and_then(|c| c.contents.get(SOURCE_LANG))
+        .map(|lang_info| {
+            lang_info
+                .contents
+                .iter()
+                .filter_map(|(fname, content)| {
+                    translation::str_to_ini(content)
+                        .ok()
+                        .map(|ini| (fname.clone(), ini))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // 4. 构建翻译任务：比较新旧 en 原文，只取新增或变更的条目
     let mut file_diffs: BTreeMap<String, ini::Ini> = BTreeMap::new();
     let mut total_entries = 0usize;
 
     for (file_name, content) in &source_lang_info.contents {
         let current_ini = translation::str_to_ini(content)?;
 
-        let diff = if let Some(old_target_ini) = old_target_ini_by_file.get(file_name) {
-            translation::diff_ini(old_target_ini, &current_ini)
+        let diff = if let Some(old_source_ini) = old_source_ini_by_file.get(file_name) {
+            translation::diff_ini(old_source_ini, &current_ini)
         } else {
             current_ini.clone()
         };
@@ -1187,12 +1205,17 @@ async fn process_mod(
             .insert(file_name.clone(), merged_str);
     }
 
-    // 构建最终 LocaleInfo：保留其他语言不变，更新 zh-CN
+    // 构建最终 LocaleInfo：保留其他语言不变，更新 zh-CN 和 en 原文
     let mut merged_locale = cached_locale.unwrap_or_else(|| LocaleInfo {
         contents: indexmap::IndexMap::new(),
         version: String::new(),
     });
     merged_locale.version = current_locale.version.clone();
+    // 保存 en 原文（供下次 diff 计算使用）
+    merged_locale
+        .contents
+        .insert(SOURCE_LANG.to_string(), source_lang_info.clone());
+    // 保存 zh-CN 翻译
     merged_locale
         .contents
         .insert(TARGET_LANG.to_string(), merged_target_lang);
