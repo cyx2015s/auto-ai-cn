@@ -421,6 +421,8 @@ const DEFAULT_SYSTEM_PROMPT: &str = r#"
 
 Power armor翻译为能量装甲，不是动力装甲。
 
+如果英文原文的模块以 Personal 开头，翻译可以省略“个人”这个前缀。
+
 ### 星球描述
 
 有且仅在space-location-description下或technology-description下出现星球介绍时，开头需要以「星球名（英文原名）」开头。
