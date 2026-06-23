@@ -416,6 +416,10 @@ Power armor翻译为能量装甲，不是动力装甲。
 
 科技名称为发现某某星球时，翻译格式为：「发现星球：XXX」，如果天体不是行星，可以视情况变为「发现卫星」，「发现星系」等。
 
+### 星岩
+
+asteroid 翻译为「星岩」，asteroid chunk 翻译为「星块」。
+
 ### 插件
 
 用于增幅建筑物效果的module-name，需要将module翻译成「插件」，以下左侧的翻译需要更改为右侧的。efficiency module:「效率模块」→「效率插件」，productivity module:「生产模块」→「产能插件」，speed module:「速度模块」→「速度插件」，quality module:「质量模块」→「品质插件」。
