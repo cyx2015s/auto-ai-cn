@@ -592,14 +592,14 @@ fn make_translation_tools() -> Vec<ToolObject> {
                         },
                         "original": {
                             "type": "string",
-                            "description": "英文原文"
+                            "description": "英文原文（仅用于传递参数时辅助你思考）"
                         },
                         "translation": {
                             "type": "string",
-                            "description": "中文翻译"
+                            "description": "中文翻译（value）"
                         }
                     },
-                    "required": ["key", "original", "translation"]
+                    "required": ["key", "translation"]
                 }
             }
         },
