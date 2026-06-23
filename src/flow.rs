@@ -180,58 +180,64 @@ pub fn extract_locale_from_zip(zip_bytes: &[u8]) -> anyhow::Result<LocaleInfo> {
         version: String::new(),
     };
 
-    // 收集所有文件名，检测公共根目录前缀
-    let mut all_names = Vec::with_capacity(archive.len());
-    for i in 0..archive.len() {
-        if let Ok(file) = archive.by_index(i) {
-            all_names.push(file.name().to_string());
-        }
-    }
-    let strip_prefix = find_common_root_prefix(&all_names);
-
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
 
-        let raw_name = file.name().to_string();
-        // 跳过目录和超大文件
-        if raw_name.ends_with('/') || file.size() > 5 * 1024 * 1024 {
+        let name = file.name().to_string();
+        // 跳过目录、超大文件、macOS 资源分支
+        if name.ends_with('/')
+            || file.size() > 5 * 1024 * 1024
+            || name.starts_with("__MACOSX")
+            || name.contains("/__MACOSX")
+            || name.starts_with('.')
+        {
             continue;
         }
 
-        // 剥离公共根目录前缀（如 "mod-name_version/"）
-        let name = match &strip_prefix {
-            Some(prefix) => raw_name.strip_prefix(prefix).unwrap_or(&raw_name),
-            None => &raw_name,
-        };
-
-        // 解析 locale/<lang>/<filename>.cfg 路径
-        if let Some(rest) = name.strip_prefix("locale/") {
+        // 在路径中查找 locale/<lang>/<filename>.cfg（不依赖前缀检测）
+        if let Some(locale_pos) = name.find("/locale/") {
+            let after_locale = &name[locale_pos + 8..]; // 跳过 "/locale/"
+            let parts: Vec<&str> = after_locale.splitn(2, '/').collect();
+            if parts.len() == 2 {
+                let lang_code = parts[0].to_string();
+                let file_name = parts[1].to_string();
+                if file_name.ends_with(".cfg") {
+                    let mut content = String::new();
+                    file.read_to_string(&mut content)?;
+                    locale_info
+                        .contents
+                        .entry(lang_code)
+                        .or_insert_with(|| LangInfo {
+                            contents: indexmap::IndexMap::new(),
+                        })
+                        .contents
+                        .insert(file_name, content);
+                }
+            }
+        }
+        // 兼容无前缀的 locale/ 路径
+        else if let Some(rest) = name.strip_prefix("locale/") {
             let parts: Vec<&str> = rest.splitn(2, '/').collect();
             if parts.len() == 2 {
                 let lang_code = parts[0].to_string();
                 let file_name = parts[1].to_string();
-
-                // 只处理 .cfg 文件
-                if !file_name.ends_with(".cfg") {
-                    continue;
+                if file_name.ends_with(".cfg") {
+                    let mut content = String::new();
+                    file.read_to_string(&mut content)?;
+                    locale_info
+                        .contents
+                        .entry(lang_code)
+                        .or_insert_with(|| LangInfo {
+                            contents: indexmap::IndexMap::new(),
+                        })
+                        .contents
+                        .insert(file_name, content);
                 }
-
-                let mut content = String::new();
-                file.read_to_string(&mut content)?;
-
-                locale_info
-                    .contents
-                    .entry(lang_code)
-                    .or_insert_with(|| LangInfo {
-                        contents: indexmap::IndexMap::new(),
-                    })
-                    .contents
-                    .insert(file_name, content);
             }
         }
 
-        // 同时检测 info.json（可能在根目录前缀下）
-        if name == "info.json" {
+        // 检测 info.json（结尾匹配，不依赖前缀）
+        if name.ends_with("/info.json") || name == "info.json" {
             let mut info_content = String::new();
             if file.read_to_string(&mut info_content).is_ok()
                 && let Ok(info) = serde_json::from_str::<serde_json::Value>(&info_content)
@@ -246,33 +252,6 @@ pub fn extract_locale_from_zip(zip_bytes: &[u8]) -> anyhow::Result<LocaleInfo> {
     }
 
     Ok(locale_info)
-}
-
-/// 从文件路径列表中检测公共根目录前缀。
-///
-/// 例：`["foo/bar.txt", "foo/baz/info.json"]` → `Some("foo/")`
-/// 仅考虑目录级前缀（以 `/` 结尾），要求所有非目录条目共享该前缀。
-fn find_common_root_prefix(names: &[String]) -> Option<String> {
-    let files: Vec<&str> = names
-        .iter()
-        .map(|s| s.as_str())
-        .filter(|s| !s.ends_with('/'))
-        .collect();
-    if files.is_empty() {
-        return None;
-    }
-
-    let first = files[0];
-    let first_slash = first.find('/')?;
-
-    // 候选前缀 = 第一个 '/' 之前的部分 + '/'
-    let candidate = &first[..=first_slash];
-
-    if files.iter().all(|f| f.starts_with(candidate)) {
-        Some(candidate.to_string())
-    } else {
-        None
-    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
