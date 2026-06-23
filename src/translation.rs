@@ -19,7 +19,10 @@ pub fn str_to_ini(s: &str) -> anyhow::Result<ini::Ini> {
 
 pub fn ini_to_str(ini: &ini::Ini) -> anyhow::Result<String> {
     let mut output = Vec::new();
-    ini.write_to(&mut output)
+    ini.write_to_opt(&mut output, ini::WriteOption {
+        line_separator: ini::LineSeparator::CR,
+        ..Default::default()
+    })
         .map_err(|e| anyhow::anyhow!("INI 写入失败: {}", e))?;
     String::from_utf8(output).map_err(|e| anyhow::anyhow!("INI 非 UTF-8: {}", e))
 }
