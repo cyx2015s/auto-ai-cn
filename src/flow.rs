@@ -260,11 +260,11 @@ pub fn extract_locale_from_zip(zip_bytes: &[u8]) -> anyhow::Result<LocaleInfo> {
 
 /// 提取 Factorio 官方 mod 的中英文对照表。
 ///
-/// 遍历 `core`, `base`, `quality`, `elevated-rails`, `space-age` 五个官方 mod 的
+/// 遍历 `core`, `base`, `quality`, `elevated-rails`, `space-age`, `recycler` 六个官方 mod 的
 /// `locale/en/*.cfg` 和对应 `zh-CN/*.cfg`，生成 key → 中文翻译 的映射。
 /// 后面的 mod（DLC）的翻译会覆盖前面的。
 pub fn extract_base_glossary(game_data_path: &Path) -> anyhow::Result<ini::Ini> {
-    const OFFICIAL_MODS: &[&str] = &["core", "base", "quality", "elevated-rails", "space-age"];
+    const OFFICIAL_MODS: &[&str] = &["core", "base", "quality", "elevated-rails", "space-age", "recycler"];
 
     let mut glossary = ini::Ini::new();
 
