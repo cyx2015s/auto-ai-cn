@@ -13,6 +13,7 @@ pub struct LangInfo {
 }
 
 pub fn str_to_ini(s: &str) -> anyhow::Result<ini::Ini> {
+    let s = s.strip_prefix('\u{feff}').unwrap_or(s);
     ini::Ini::load_from_str(s).map_err(|e| anyhow::anyhow!("INI 解析失败: {}", e))
 }
 
