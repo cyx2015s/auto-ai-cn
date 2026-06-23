@@ -118,6 +118,12 @@ pub fn pack_all_to_one_mod(
         packed_count += 1;
     }
 
+    // toggle.py
+    let zip_path = format!("{}/locale/zh-CN/toggly.py", pack_name);
+    const TOGGLE_PY: &'static str = include_str!("templates/toggle.py");
+    zip_writer.start_file(&zip_path, options)?;
+    zip_writer.write_all(TOGGLE_PY.as_bytes())?;
+
     // info.json
     let info_json = serde_json::json!({
         "name": mod_pack_name,

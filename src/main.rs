@@ -1,5 +1,6 @@
 use std::{path::PathBuf, str::FromStr};
 
+use anyhow::Context;
 use chrono::{DateTime, Duration, Utc};
 use clap::{Parser, Subcommand};
 use log::LevelFilter::Debug;
@@ -34,6 +35,10 @@ enum Command {
         /// 手动指定要翻译的 mod 名称
         #[arg(value_name = "MOD")]
         mods: Vec<String>,
+
+        /// 从 Factorio 的 mod-list.json 中读取启用的 mod 列表
+        #[arg(long)]
+        mod_list: Option<PathBuf>,
     },
 
     /// 将缓存中的翻译打包为 1 个 Factorio mod zip
@@ -82,8 +87,31 @@ async fn main() -> anyhow::Result<()> {
             flow::run_translation_pipeline(config, None, None, None).await?;
         }
 
-        Some(Command::Translate { since, limit, mods }) => {
+        Some(Command::Translate {
+            since,
+            limit,
+            mut mods,
+            mod_list,
+        }) => {
             let config = FlowConfig::from_env()?;
+
+            // 从 mod-list.json 中读取启用的 mod
+            if let Some(ref path) = mod_list {
+                let content = std::fs::read_to_string(path)
+                    .with_context(|| format!("无法读取 mod-list.json: {}", path.display()))?;
+                let json: serde_json::Value = serde_json::from_str(&content)
+                    .context("无法解析 mod-list.json")?;
+                if let Some(list) = json["mods"].as_array() {
+                    for m in list {
+                        if m["enabled"].as_bool().unwrap_or(true) {
+                            if let Some(name) = m["name"].as_str() {
+                                mods.push(name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+
             let mod_names: Option<Vec<String>> = if mods.is_empty() {
                 None
             } else {

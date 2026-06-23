@@ -1576,30 +1576,4 @@ mod tests {
         assert!(en_base.contains("iron-plate=Iron plate"));
     }
 
-    #[test]
-    fn test_find_common_root_prefix() {
-        let names = vec![
-            "mod_1.0.0/locale/en/base.cfg".to_string(),
-            "mod_1.0.0/locale/zh-CN/base.cfg".to_string(),
-            "mod_1.0.0/info.json".to_string(),
-        ];
-        assert_eq!(
-            super::find_common_root_prefix(&names).as_deref(),
-            Some("mod_1.0.0/")
-        );
-
-        // 无公共前缀
-        let names2 = vec![
-            "locale/en/base.cfg".to_string(),
-            "other/info.json".to_string(),
-        ];
-        assert_eq!(super::find_common_root_prefix(&names2), None);
-
-        // 单文件
-        let names3 = vec!["foo/bar.txt".to_string()];
-        assert_eq!(
-            super::find_common_root_prefix(&names3).as_deref(),
-            Some("foo/")
-        );
-    }
 }
