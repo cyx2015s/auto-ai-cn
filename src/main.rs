@@ -1,9 +1,9 @@
-use std::{path::PathBuf, str::FromStr};
+use std::{io::Read, path::PathBuf, str::FromStr};
 
 use anyhow::Context;
 use chrono::{DateTime, Duration, Utc};
 use clap::{Parser, Subcommand};
-use log::LevelFilter::Debug;
+use log::{info, LevelFilter::Debug};
 
 use crate::flow::FlowConfig;
 
@@ -54,6 +54,13 @@ enum Command {
         /// 翻译包名 [默认: tanvec-ai-cn]
         #[arg(long, default_value = "tanvec-ai-cn")]
         name: String,
+    },
+
+    /// 上传 mod zip 到 Factorio Mod Portal
+    Upload {
+        /// 要上传的 mod zip 文件路径
+        #[arg(long, value_name = "FILE")]
+        file: PathBuf,
     },
 }
 
@@ -126,6 +133,47 @@ async fn main() -> anyhow::Result<()> {
             name,
         }) => {
             pack::pack_all_to_one_mod(&cache_dir, &output_dir, &name)?;
+        }
+
+        Some(Command::Upload { file }) => {
+            let api_key = std::env::var("FACTORIO_MOD_PORTAL_KEY")
+                .context("请设置 FACTORIO_MOD_PORTAL_KEY 环境变量（Mod Portal 上传 API Key）")?;
+
+            let zip_data = std::fs::read(&file)
+                .with_context(|| format!("无法读取文件: {}", file.display()))?;
+
+            // 从 zip 中的 info.json 提取 mod 名称
+            let cursor = std::io::Cursor::new(&zip_data);
+            let mut archive = zip::ZipArchive::new(cursor)
+                .context("无法打开 zip 文件")?;
+            let mod_name = {
+                let mut found_name = None;
+                for i in 0..archive.len() {
+                    if let Ok(mut entry) = archive.by_index(i) {
+                        let name = entry.name().to_string();
+                        if name.ends_with("info.json") || name == "info.json" {
+                            let mut content = String::new();
+                            if entry.read_to_string(&mut content).is_ok()
+                                && let Ok(json) =
+                                    serde_json::from_str::<serde_json::Value>(&content)
+                                && let Some(n) = json["name"].as_str()
+                            {
+                                found_name = Some(n.to_string());
+                                break;
+                            }
+                        }
+                    }
+                }
+                found_name.context("无法从 zip 中提取 mod 名称（info.json 未找到或无效）")?
+            };
+
+            info!("准备上传 mod: {} (文件: {})", mod_name, file.display());
+
+            let client = factorio_api::FactorioWebClient::anonymous();
+            client
+                .upload_mod(&api_key, &mod_name, &zip_data)
+                .await?;
+            info!("上传成功: {}", mod_name);
         }
     }
 

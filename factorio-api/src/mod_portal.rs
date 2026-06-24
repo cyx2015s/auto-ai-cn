@@ -438,6 +438,17 @@ impl FactorioWebClient {
             config: Config { user, token },
         }
     }
+
+    /// 创建无需 Factorio 认证的匿名客户端（用于上传等场景）
+    pub fn anonymous() -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            config: Config {
+                user: String::new(),
+                token: String::new(),
+            },
+        }
+    }
 }
 
 // ============================================================================

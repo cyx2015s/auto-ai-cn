@@ -54,7 +54,8 @@ pub fn pack_all_to_one_mod(
     std::fs::create_dir_all(output_dir)?;
 
     let today = Utc::now().format("%Y.%m.%d").to_string();
-    let output_path = output_dir.join(format!("{}.zip", pack_name));
+    let zip_name = format!("{}_{}", pack_name, today);
+    let output_path = output_dir.join(format!("{}.zip", zip_name));
 
     let file = std::fs::File::create(&output_path)?;
     let mut zip_writer = zip::ZipWriter::new(file);
@@ -125,7 +126,7 @@ pub fn pack_all_to_one_mod(
 
     // info.json
     let info_json = serde_json::json!({
-        "name": mod_pack_name,
+        "name": pack_name,
         "version": today,
         "title": "切向量的 AI 汉化",
         "factorio_version": "2.1",
