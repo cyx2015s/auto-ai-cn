@@ -195,7 +195,9 @@ pub fn extract_locale_from_zip(zip_bytes: &[u8]) -> anyhow::Result<LocaleInfo> {
         }
 
         // 在路径中查找 locale/<lang>/<filename>.cfg（不依赖前缀检测）
-        if let Some(locale_pos) = name.find("/locale/") {
+        if let Some(locale_pos) = name.find("/locale/")
+            && !name[0..locale_pos].contains('/')
+        {
             let after_locale = &name[locale_pos + 8..]; // 跳过 "/locale/"
             let parts: Vec<&str> = after_locale.splitn(2, '/').collect();
             if parts.len() == 2 {
@@ -264,7 +266,14 @@ pub fn extract_locale_from_zip(zip_bytes: &[u8]) -> anyhow::Result<LocaleInfo> {
 /// `locale/en/*.cfg` 和对应 `zh-CN/*.cfg`，生成 key → 中文翻译 的映射。
 /// 后面的 mod（DLC）的翻译会覆盖前面的。
 pub fn extract_base_glossary(game_data_path: &Path) -> anyhow::Result<ini::Ini> {
-    const OFFICIAL_MODS: &[&str] = &["core", "base", "quality", "elevated-rails", "space-age", "recycler"];
+    const OFFICIAL_MODS: &[&str] = &[
+        "core",
+        "base",
+        "quality",
+        "elevated-rails",
+        "space-age",
+        "recycler",
+    ];
 
     let mut glossary = ini::Ini::new();
 
@@ -1194,8 +1203,12 @@ async fn process_mod(
         let mut missing_diffs: BTreeMap<String, ini::Ini> = BTreeMap::new();
         for (file_name, content) in &source_lang_info.contents {
             let reference_ini = translation::str_to_ini(content)?;
-            let merged_ini = merged_target_lang.contents.get(file_name)
-                .map(|s| translation::str_to_ini(s)).transpose()?.unwrap_or_default();
+            let merged_ini = merged_target_lang
+                .contents
+                .get(file_name)
+                .map(|s| translation::str_to_ini(s))
+                .transpose()?
+                .unwrap_or_default();
             let missing = translation::diff_ini_keys_only(&merged_ini, &reference_ini);
             if !missing.is_empty() {
                 missing_diffs.insert(file_name.clone(), missing);
@@ -1205,33 +1218,43 @@ async fn process_mod(
             info!("  ↳ 完整性检查通过 (第 {} 轮)", round + 1);
             break;
         }
-        let missing_count: usize = missing_diffs.values()
-            .flat_map(|ini| ini.iter().flat_map(|(_, p)| p.iter())).count();
+        let missing_count: usize = missing_diffs
+            .values()
+            .flat_map(|ini| ini.iter().flat_map(|(_, p)| p.iter()))
+            .count();
         if missing_count == 0 {
             info!("  ↳ 完整性检查通过 (第 {} 轮)", round + 1);
             break;
         }
-        info!("  ↳ 发现 {} 个遗漏条目 (第 {} 轮)，让 AI 补充...", missing_count, round + 1);
+        info!(
+            "  ↳ 发现 {} 个遗漏条目 (第 {} 轮)，让 AI 补充...",
+            missing_count,
+            round + 1
+        );
         info!("  ↳ 遗漏内容详细信息: {:?}", &missing_diffs);
         let supplement_prompt = format!(
             "## 补充翻译任务\n\n以下键在上轮翻译中被遗漏，请补充翻译：\n\n{}",
             build_user_prompt(base_locale, &missing_diffs, None)?
         );
-        let supplement_result = call_llm_for_translation(
-            client_deepseek, system_prompt, &supplement_prompt, glossary,
-        ).await?;
+        let supplement_result =
+            call_llm_for_translation(client_deepseek, system_prompt, &supplement_prompt, glossary)
+                .await?;
         if supplement_result.is_empty() {
             warn!("  ↳ AI 未返回补充翻译，停止完整性检查");
             break;
         }
         for (file_name, content) in &source_lang_info.contents {
             let reference_ini = translation::str_to_ini(content)?;
-            let old_ini = merged_target_lang.contents.get(file_name)
-                .map(|s| translation::str_to_ini(s)).transpose()?.unwrap_or_default();
+            let old_ini = merged_target_lang
+                .contents
+                .get(file_name)
+                .map(|s| translation::str_to_ini(s))
+                .transpose()?
+                .unwrap_or_default();
             let merged_ini = translation::merge_ini(&reference_ini, &old_ini, &supplement_result);
-            merged_target_lang.contents.insert(
-                file_name.clone(), translation::ini_to_str(&merged_ini)?,
-            );
+            merged_target_lang
+                .contents
+                .insert(file_name.clone(), translation::ini_to_str(&merged_ini)?);
         }
     }
 
@@ -1579,5 +1602,4 @@ mod tests {
         let en_base = locale.contents["en"].contents["base.cfg"].as_str();
         assert!(en_base.contains("iron-plate=Iron plate"));
     }
-
 }
