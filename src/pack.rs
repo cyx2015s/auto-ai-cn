@@ -29,7 +29,7 @@ use crate::translation;
 pub fn pack_all_to_one_mod(
     cache_dir: &Path,
     output_dir: &Path,
-    mod_pack_name: &str,
+    pack_name: &str,
 ) -> anyhow::Result<PathBuf> {
     // 扫描缓存目录
     let mut cache_files: Vec<PathBuf> = Vec::new();
@@ -54,7 +54,6 @@ pub fn pack_all_to_one_mod(
     std::fs::create_dir_all(output_dir)?;
 
     let today = Utc::now().format("%Y.%m.%d").to_string();
-    let pack_name = format!("{}_{}", mod_pack_name, today);
     let output_path = output_dir.join(format!("{}.zip", pack_name));
 
     let file = std::fs::File::create(&output_path)?;
