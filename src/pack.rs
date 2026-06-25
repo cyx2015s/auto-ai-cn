@@ -132,7 +132,7 @@ pub fn pack_all_to_one_mod(
         "factorio_version": "2.1",
         "dependencies": ["base >= 2.1"],
         "author": "tanvec",
-        "description": format!("包含 {} 个模组的 AI 中文翻译。在模组官网上查看详细更新信息。", packed_count)
+        "description": format!("包含 {} 个模组的 AI 中文翻译。在模组官网上查看详细更新信息。手动解压可以按需求启用翻译，请查看 locale/zh-CN/ 下的 toggle_py 文件。", packed_count)
     });
     let info_path = format!("{}/info.json", pack_name);
     zip_writer.start_file(&info_path, options)?;

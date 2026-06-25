@@ -1,7 +1,12 @@
-# 自动根据mod-list.json的内容调整locale文件夹下zh-CN中每个文件名的后缀
-# 应该放置在zh-CN文件夹中，运行后会自动修改zh-CN文件夹下的每个文件名
-# mods/tanvec-ai-cn/zh-CN/...cfg
-# mods/mod-list.json
+#! python3
+
+"""
+自动根据mod-list.json的内容调整locale文件夹下zh-CN中每个文件名的后缀
+应该放置在zh-CN文件夹中，运行后会自动修改zh-CN文件夹下的每个文件名
+mods/tanvec-ai-cn/zh-CN/...cfg
+mods/mod-list.json
+"""
+
 import json
 import os
 from pathlib import Path
