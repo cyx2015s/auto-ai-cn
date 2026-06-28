@@ -713,7 +713,7 @@ pub fn build_user_prompt(
 #[derive(Debug, Clone, Deserialize)]
 pub struct SubmittedEntry {
     pub key: String,
-    pub original: String,
+    pub original: Option<String>,
     pub translation: String,
 }
 
