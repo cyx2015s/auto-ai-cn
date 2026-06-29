@@ -14,16 +14,26 @@ pub struct LangInfo {
 
 pub fn str_to_ini(s: &str) -> anyhow::Result<ini::Ini> {
     let s = s.strip_prefix('\u{feff}').unwrap_or(s);
-    ini::Ini::load_from_str(s).map_err(|e| anyhow::anyhow!("INI 解析失败: {}", e))
+    ini::Ini::load_from_str_opt(
+        s,
+        ini::ParseOption {
+            enabled_quote: false,
+            ..Default::default()
+        },
+    )
+    .map_err(|e| anyhow::anyhow!("INI 解析失败: {}", e))
 }
 
 pub fn ini_to_str(ini: &ini::Ini) -> anyhow::Result<String> {
     let mut output = Vec::new();
-    ini.write_to_opt(&mut output, ini::WriteOption {
-        line_separator: ini::LineSeparator::CR,
-        ..Default::default()
-    })
-        .map_err(|e| anyhow::anyhow!("INI 写入失败: {}", e))?;
+    ini.write_to_opt(
+        &mut output,
+        ini::WriteOption {
+            line_separator: ini::LineSeparator::CR,
+            ..Default::default()
+        },
+    )
+    .map_err(|e| anyhow::anyhow!("INI 写入失败: {}", e))?;
     String::from_utf8(output).map_err(|e| anyhow::anyhow!("INI 非 UTF-8: {}", e))
 }
 
@@ -51,10 +61,7 @@ pub fn diff_ini_keys_only(old: &ini::Ini, new: &ini::Ini) -> ini::Ini {
     for (sec, prop) in new.iter() {
         let old_prop = old.section(sec);
         for (k, v) in prop.iter() {
-            if old_prop
-                .and_then(|p| p.get(k))
-                .is_some()
-            {
+            if old_prop.and_then(|p| p.get(k)).is_some() {
                 continue;
             }
             diff.with_section(sec).set(k, v);
