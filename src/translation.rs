@@ -14,8 +14,24 @@ pub struct LangInfo {
 
 pub fn str_to_ini(s: &str) -> anyhow::Result<ini::Ini> {
     let s = s.strip_prefix('\u{feff}').unwrap_or(s);
+
+    // 清洗：去掉每行前导空白，修复缩进的 # 注释被误认为 key 的问题
+    let cleaned: String = s
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            // 保留空行，非空行用 trim 后的版本
+            if trimmed.is_empty() {
+                line
+            } else {
+                trimmed
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
     ini::Ini::load_from_str_opt(
-        s,
+        &cleaned,
         ini::ParseOption {
             enabled_quote: false,
             ..Default::default()
