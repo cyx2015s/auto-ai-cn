@@ -26,10 +26,15 @@ use crate::translation;
 /// 将 cache 目录中所有翻译缓存打包为 1 个 Factorio mod zip。
 ///
 /// 每个源 mod 的 zh-CN 翻译合并为一个 `.cfg` 文件。
+///
+/// 如果 `protect` 为 true 且提供了 `base_keys`，检测到 mod 翻译覆盖原版 key 时，
+/// 后缀用 `.cfg.disable` 而非 `.cfg`，避免覆盖原版翻译。
 pub fn pack_all_to_one_mod(
     cache_dir: &Path,
     output_dir: &Path,
     pack_name: &str,
+    protect: bool,
+    base_keys: Option<&std::collections::HashSet<String>>,
 ) -> anyhow::Result<PathBuf> {
     // 扫描缓存目录
     let mut cache_files: Vec<PathBuf> = Vec::new();
@@ -112,14 +117,30 @@ pub fn pack_all_to_one_mod(
         }
 
         let ini_str = translation::ini_to_str(&merged_ini)?;
-        let zip_path = format!("{}/locale/zh-CN/{}.cfg", pack_name, mod_name);
+
+        // protect 模式下检查是否覆盖原版 key
+        let suffix = if protect
+            && let Some(base_keys) = base_keys
+        {
+            let overlaps = has_base_overlap(&merged_ini, base_keys);
+            if overlaps {
+                info!("  ↳ {} 覆盖原版翻译，标记为 .cfg.disable", mod_name);
+                "cfg.disable"
+            } else {
+                "cfg"
+            }
+        } else {
+            "cfg"
+        };
+
+        let zip_path = format!("{}/locale/zh-CN/{}.{}", pack_name, mod_name, suffix);
         zip_writer.start_file(&zip_path, options)?;
         zip_writer.write_all(ini_str.as_bytes())?;
         packed_count += 1;
     }
 
-    // toggle.py
-    let zip_path = format!("{}/locale/zh-CN/toggly_py", pack_name);
+    // toggle.py， 官网不允许传带可执行文件的 mod 包，作此变通
+    let zip_path = format!("{}/locale/zh-CN/toggle_py", pack_name);
     const TOGGLE_PY: &'static str = include_str!("templates/toggle.py");
     zip_writer.start_file(&zip_path, options)?;
     zip_writer.write_all(TOGGLE_PY.as_bytes())?;
@@ -132,7 +153,7 @@ pub fn pack_all_to_one_mod(
         "factorio_version": "2.1",
         "dependencies": ["base >= 2.1"],
         "author": "tanvec",
-        "description": format!("包含 {} 个模组的 AI 中文翻译。在模组官网上查看详细更新信息。手动解压可以按需求启用翻译，请查看 locale/zh-CN/ 下的 toggle_py 文件。", packed_count)
+            "description": format!("包含 {} 个模组的 AI 中文翻译。在模组官网上查看详细更新信息。手动解压可以按需求启用翻译，请查看 locale/zh-CN/ 下的 toggle_py 文件。默认禁用了所有会覆盖原版游戏词条的 mod 的翻译内容。联机时建议所有玩家都使用解压版本的 mod，并且手动运行 Python 脚本只启用对应翻译。", packed_count)
     });
     let info_path = format!("{}/info.json", pack_name);
     zip_writer.start_file(&info_path, options)?;
@@ -142,4 +163,18 @@ pub fn pack_all_to_one_mod(
 
     info!("翻译包已生成: {:?} ({} 个 mod)", output_path, packed_count);
     Ok(output_path)
+}
+
+/// 检查 INI 中是否有任何 key 出现在原版 key 集合中
+fn has_base_overlap(ini: &ini::Ini, base_keys: &std::collections::HashSet<String>) -> bool {
+    for (section, props) in ini.iter() {
+        let sec_prefix = section.map_or_else(String::new, |s| format!("{}.", s));
+        for (key, _) in props.iter() {
+            if base_keys.contains(&format!("{}{}", sec_prefix, key)) {
+                log::debug!("覆盖原版 key: {}{}", sec_prefix, key);
+                return true;
+            }
+        }
+    }
+    false
 }

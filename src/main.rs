@@ -1,4 +1,4 @@
-use std::{io::Read, path::PathBuf, str::FromStr};
+use std::{io::Read, path::{Path, PathBuf}, str::FromStr};
 
 use anyhow::Context;
 use chrono::{DateTime, Duration, Utc};
@@ -54,6 +54,10 @@ enum Command {
         /// 翻译包名 [默认: tanvec-ai-cn]
         #[arg(long, default_value = "tanvec-ai-cn")]
         name: String,
+
+        /// 保护模式：覆盖原版翻译的 mod 自动标记为 .cfg.disable
+        #[arg(long)]
+        protect: bool,
     },
 
     /// 上传 mod zip 到 Factorio Mod Portal
@@ -131,8 +135,22 @@ async fn main() -> anyhow::Result<()> {
             cache_dir,
             output_dir,
             name,
+            protect,
         }) => {
-            pack::pack_all_to_one_mod(&cache_dir, &output_dir, &name)?;
+            let base_keys = if protect {
+                let game_data_path = std::env::var("FACTORIO_DATA_PATH")
+                    .context("protect 模式需要设置 FACTORIO_DATA_PATH 环境变量")?;
+                Some(flow::extract_base_keys(Path::new(&game_data_path))?)
+            } else {
+                None
+            };
+            pack::pack_all_to_one_mod(
+                &cache_dir,
+                &output_dir,
+                &name,
+                protect,
+                base_keys.as_ref(),
+            )?;
         }
 
         Some(Command::Upload { file }) => {
