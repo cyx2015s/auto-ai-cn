@@ -1,0 +1,1616 @@
+
+{
+  "mods": 
+  [
+    
+    {
+      "name": "base",
+      "enabled": true
+    },
+    
+    {
+      "name": "elevated-rails",
+      "enabled": true
+    },
+    
+    {
+      "name": "quality",
+      "enabled": true
+    },
+    
+    {
+      "name": "space-age",
+      "enabled": true
+    },
+    
+    {
+      "name": "0-event-trace",
+      "enabled": false
+    },
+    
+    {
+      "name": "aai-containers",
+      "enabled": false
+    },
+    
+    {
+      "name": "aai-industry",
+      "enabled": false
+    },
+    
+    {
+      "name": "aai-loaders",
+      "enabled": false
+    },
+    
+    {
+      "name": "aai-signal-transmission",
+      "enabled": false
+    },
+    
+    {
+      "name": "aai-vehicles-ironclad",
+      "enabled": false
+    },
+    
+    {
+      "name": "Accumulator-V2",
+      "enabled": false
+    },
+    
+    {
+      "name": "advanced-centrifuge",
+      "enabled": false
+    },
+    
+    {
+      "name": "AfraidOfTheDark",
+      "enabled": false
+    },
+    
+    {
+      "name": "alchemy-khemia",
+      "enabled": false
+    },
+    
+    {
+      "name": "alien-biomes",
+      "enabled": false
+    },
+    
+    {
+      "name": "alien-biomes-graphics",
+      "enabled": false
+    },
+    
+    {
+      "name": "aotixk2se",
+      "enabled": false
+    },
+    
+    {
+      "name": "aotixpy",
+      "enabled": false
+    },
+    
+    {
+      "name": "aotixzhcn",
+      "enabled": false
+    },
+    
+    {
+      "name": "apia",
+      "enabled": false
+    },
+    
+    {
+      "name": "Arcanyx",
+      "enabled": false
+    },
+    
+    {
+      "name": "ArcanyxAssets",
+      "enabled": false
+    },
+    
+    {
+      "name": "ArmouredBiters",
+      "enabled": false
+    },
+    
+    {
+      "name": "assets-eneas",
+      "enabled": false
+    },
+    
+    {
+      "name": "astroponics",
+      "enabled": false
+    },
+    
+    {
+      "name": "AutoDeconstruct",
+      "enabled": false
+    },
+    
+    {
+      "name": "Automatic_Train_Painter",
+      "enabled": false
+    },
+    
+    {
+      "name": "auto_manual_mode",
+      "enabled": false
+    },
+    
+    {
+      "name": "banshu",
+      "enabled": false
+    },
+    
+    {
+      "name": "barreling-group2",
+      "enabled": false
+    },
+    
+    {
+      "name": "BetterInserters",
+      "enabled": false
+    },
+    
+    {
+      "name": "BiggerStacksPlus",
+      "enabled": false
+    },
+    
+    {
+      "name": "bioprocessing-tab",
+      "enabled": false
+    },
+    
+    {
+      "name": "blueprint-shotgun",
+      "enabled": false
+    },
+    
+    {
+      "name": "bobinserters",
+      "enabled": false
+    },
+    
+    {
+      "name": "boblibrary",
+      "enabled": false
+    },
+    
+    {
+      "name": "boblogistics",
+      "enabled": false
+    },
+    
+    {
+      "name": "BottleneckLite",
+      "enabled": false
+    },
+    
+    {
+      "name": "bplib",
+      "enabled": false
+    },
+    
+    {
+      "name": "bullet-trails",
+      "enabled": false
+    },
+    
+    {
+      "name": "calctorio",
+      "enabled": false
+    },
+    
+    {
+      "name": "canal-excavator",
+      "enabled": false
+    },
+    
+    {
+      "name": "canal-excavator-graphics",
+      "enabled": false
+    },
+    
+    {
+      "name": "cargo-ships",
+      "enabled": false
+    },
+    
+    {
+      "name": "cargo-ships-graphics",
+      "enabled": false
+    },
+    
+    {
+      "name": "cargo_crates",
+      "enabled": false
+    },
+    
+    {
+      "name": "carna",
+      "enabled": false
+    },
+    
+    {
+      "name": "carna_assets",
+      "enabled": false
+    },
+    
+    {
+      "name": "carna_assets_2",
+      "enabled": false
+    },
+    
+    {
+      "name": "carna_assets_3",
+      "enabled": false
+    },
+    
+    {
+      "name": "carna_assets_enemies",
+      "enabled": false
+    },
+    
+    {
+      "name": "castra",
+      "enabled": false
+    },
+    
+    {
+      "name": "cerys-lunaponics",
+      "enabled": false
+    },
+    
+    {
+      "name": "Cerys-Moon-of-Fulgora",
+      "enabled": false
+    },
+    
+    {
+      "name": "cf-lib",
+      "enabled": false
+    },
+    
+    {
+      "name": "ChangeInserterDropLane",
+      "enabled": false
+    },
+    
+    {
+      "name": "CharacterModHelper",
+      "enabled": false
+    },
+    
+    {
+      "name": "chest-auto-sort",
+      "enabled": false
+    },
+    
+    {
+      "name": "chinese",
+      "enabled": false
+    },
+    
+    {
+      "name": "ChunkyChunks",
+      "enabled": false
+    },
+    
+    {
+      "name": "CircuitHUD-V2",
+      "enabled": false
+    },
+    
+    {
+      "name": "Cloning-vat-building",
+      "enabled": false
+    },
+    
+    {
+      "name": "CoalToWood",
+      "enabled": false
+    },
+    
+    {
+      "name": "Cold_biters",
+      "enabled": false
+    },
+    
+    {
+      "name": "colorful_biochamber",
+      "enabled": false
+    },
+    
+    {
+      "name": "combat-mechanics-overhaul",
+      "enabled": false
+    },
+    
+    {
+      "name": "common-prototypes",
+      "enabled": false
+    },
+    
+    {
+      "name": "common-prototypes-graphics",
+      "enabled": false
+    },
+    
+    {
+      "name": "companion-drones-mjlfix",
+      "enabled": false
+    },
+    
+    {
+      "name": "condensing-agricultural-tower",
+      "enabled": false
+    },
+    
+    {
+      "name": "ConfigUnderLengths",
+      "enabled": false
+    },
+    
+    {
+      "name": "configurable-solar-and-accu",
+      "enabled": false
+    },
+    
+    {
+      "name": "corrundum",
+      "enabled": false
+    },
+    
+    {
+      "name": "cr-commons",
+      "enabled": false
+    },
+    
+    {
+      "name": "cubium",
+      "enabled": false
+    },
+    
+    {
+      "name": "cybersyn",
+      "enabled": false
+    },
+    
+    {
+      "name": "cybersyn-combinator",
+      "enabled": false
+    },
+    
+    {
+      "name": "DarkNight",
+      "enabled": false
+    },
+    
+    {
+      "name": "dea-dia-system",
+      "enabled": false
+    },
+    
+    {
+      "name": "Delete-Chunk-Tool",
+      "enabled": false
+    },
+    
+    {
+      "name": "diesel_cargo_ships",
+      "enabled": false
+    },
+    
+    {
+      "name": "diesel_engine",
+      "enabled": false
+    },
+    
+    {
+      "name": "diesel_machines",
+      "enabled": false
+    },
+    
+    {
+      "name": "dimension-warp",
+      "enabled": false
+    },
+    
+    {
+      "name": "DiscoScience",
+      "enabled": false
+    },
+    
+    {
+      "name": "DistributionRequestPlanner",
+      "enabled": false
+    },
+    
+    {
+      "name": "DoubleSpeedBelts",
+      "enabled": false
+    },
+    
+    {
+      "name": "ElectricFurnacesRevamp",
+      "enabled": false
+    },
+    
+    {
+      "name": "ElectricPoleRangeMultiplier",
+      "enabled": false
+    },
+    
+    {
+      "name": "elevated-pipes",
+      "enabled": false
+    },
+    
+    {
+      "name": "enable-all-feature-flags",
+      "enabled": false
+    },
+    
+    {
+      "name": "enhanced-shadows",
+      "enabled": false
+    },
+    
+    {
+      "name": "equipment-gantry",
+      "enabled": false
+    },
+    
+    {
+      "name": "est-tiny-storage-tank",
+      "enabled": false
+    },
+    
+    {
+      "name": "even-distribution",
+      "enabled": false
+    },
+    
+    {
+      "name": "even-pickier-dollies",
+      "enabled": false
+    },
+    
+    {
+      "name": "EverythingOnNauvis",
+      "enabled": false
+    },
+    
+    {
+      "name": "factorio-ai-cn",
+      "enabled": false
+    },
+    
+    {
+      "name": "factorio-crash-site",
+      "enabled": false
+    },
+    
+    {
+      "name": "Factorio-Tiberium",
+      "enabled": false
+    },
+    
+    {
+      "name": "factoryplanner",
+      "enabled": false
+    },
+    
+    {
+      "name": "factory_solver",
+      "enabled": false
+    },
+    
+    {
+      "name": "far-reach",
+      "enabled": false
+    },
+    
+    {
+      "name": "faster-inserters",
+      "enabled": false
+    },
+    
+    {
+      "name": "fdsl",
+      "enabled": false
+    },
+    
+    {
+      "name": "FilterChests",
+      "enabled": false
+    },
+    
+    {
+      "name": "fishing-dock",
+      "enabled": false
+    },
+    
+    {
+      "name": "Flare Stack",
+      "enabled": false
+    },
+    
+    {
+      "name": "flib",
+      "enabled": false
+    },
+    
+    {
+      "name": "FluidMustFlow",
+      "enabled": false
+    },
+    
+    {
+      "name": "FluidWagonColorMask",
+      "enabled": false
+    },
+    
+    {
+      "name": "FNEI",
+      "enabled": false
+    },
+    
+    {
+      "name": "foliax",
+      "enabled": false
+    },
+    
+    {
+      "name": "Full_Power_Coverage",
+      "enabled": false
+    },
+    
+    {
+      "name": "FusionPoweredRobots",
+      "enabled": false
+    },
+    
+    {
+      "name": "gleba-water-cane",
+      "enabled": false
+    },
+    
+    {
+      "name": "glib",
+      "enabled": false
+    },
+    
+    {
+      "name": "god-module",
+      "enabled": false
+    },
+    
+    {
+      "name": "grappling-gun",
+      "enabled": false
+    },
+    
+    {
+      "name": "GUI_Unifyer",
+      "enabled": false
+    },
+    
+    {
+      "name": "gvv",
+      "enabled": false
+    },
+    
+    {
+      "name": "heavy_gun_turret",
+      "enabled": false
+    },
+    
+    {
+      "name": "helmod",
+      "enabled": false
+    },
+    
+    {
+      "name": "hextorio",
+      "enabled": false
+    },
+    
+    {
+      "name": "Hexworld",
+      "enabled": false
+    },
+    
+    {
+      "name": "Igrys",
+      "enabled": false
+    },
+    
+    {
+      "name": "informatron",
+      "enabled": false
+    },
+    
+    {
+      "name": "InserterFuelLeech",
+      "enabled": false
+    },
+    
+    {
+      "name": "IridescentIndustry",
+      "enabled": false
+    },
+    
+    {
+      "name": "IRobot",
+      "enabled": false
+    },
+    
+    {
+      "name": "janus",
+      "enabled": false
+    },
+    
+    {
+      "name": "janus-reshifted",
+      "enabled": false
+    },
+    
+    {
+      "name": "jetpack",
+      "enabled": false
+    },
+    
+    {
+      "name": "k2so-assets",
+      "enabled": false
+    },
+    
+    {
+      "name": "Krastorio2",
+      "enabled": false
+    },
+    
+    {
+      "name": "Krastorio2-spaced-out",
+      "enabled": false
+    },
+    
+    {
+      "name": "Krastorio2Assets",
+      "enabled": false
+    },
+    
+    {
+      "name": "Krastorio2MenuSimulations",
+      "enabled": false
+    },
+    
+    {
+      "name": "kry-all-planet-mods",
+      "enabled": false
+    },
+    
+    {
+      "name": "kry-planet-mods-lite",
+      "enabled": false
+    },
+    
+    {
+      "name": "kry_stdlib",
+      "enabled": false
+    },
+    
+    {
+      "name": "lex-aircraft",
+      "enabled": false
+    },
+    
+    {
+      "name": "lighthouse_radar",
+      "enabled": false
+    },
+    
+    {
+      "name": "lignumis",
+      "enabled": false
+    },
+    
+    {
+      "name": "lignumis-assets",
+      "enabled": false
+    },
+    
+    {
+      "name": "LinkedChestAndPipe",
+      "enabled": false
+    },
+    
+    {
+      "name": "linox",
+      "enabled": false
+    },
+    
+    {
+      "name": "loaders-modernized",
+      "enabled": false
+    },
+    
+    {
+      "name": "Long_Range_Delivery_Drones",
+      "enabled": false
+    },
+    
+    {
+      "name": "long_range_delivery_drones_talandar_fork",
+      "enabled": false
+    },
+    
+    {
+      "name": "long_stack_inserter",
+      "enabled": false
+    },
+    
+    {
+      "name": "lubrication_tower",
+      "enabled": false
+    },
+    
+    {
+      "name": "LXGW-FONT",
+      "enabled": false
+    },
+    
+    {
+      "name": "machine-upgrades",
+      "enabled": false
+    },
+    
+    {
+      "name": "manual-inventory-sort",
+      "enabled": false
+    },
+    
+    {
+      "name": "maraxsis",
+      "enabled": false
+    },
+    
+    {
+      "name": "matter_printer",
+      "enabled": false
+    },
+    
+    {
+      "name": "metal-and-stars",
+      "enabled": false
+    },
+    
+    {
+      "name": "metal-and-stars-graphics",
+      "enabled": false
+    },
+    
+    {
+      "name": "metal-and-stars-graphics-2",
+      "enabled": false
+    },
+    
+    {
+      "name": "mf-buildings",
+      "enabled": false
+    },
+    
+    {
+      "name": "mf-buildings-graphics-1",
+      "enabled": false
+    },
+    
+    {
+      "name": "mf-core",
+      "enabled": false
+    },
+    
+    {
+      "name": "mf-logistics",
+      "enabled": false
+    },
+    
+    {
+      "name": "mf-logistics-graphics-1",
+      "enabled": false
+    },
+    
+    {
+      "name": "mferrari_graphics_pack_1",
+      "enabled": false
+    },
+    
+    {
+      "name": "mferrari_lib",
+      "enabled": false
+    },
+    
+    {
+      "name": "Milestones",
+      "enabled": false
+    },
+    
+    {
+      "name": "mimi-graphics",
+      "enabled": false
+    },
+    
+    {
+      "name": "minimalist-rails",
+      "enabled": false
+    },
+    
+    {
+      "name": "mining-patch-planner",
+      "enabled": false
+    },
+    
+    {
+      "name": "module-inserter",
+      "enabled": false
+    },
+    
+    {
+      "name": "ModuleInserterSimplified",
+      "enabled": false
+    },
+    
+    {
+      "name": "moon-eneas",
+      "enabled": false
+    },
+    
+    {
+      "name": "Moon_Logic_2",
+      "enabled": false
+    },
+    
+    {
+      "name": "Moshine",
+      "enabled": false
+    },
+    
+    {
+      "name": "Moshine-assets",
+      "enabled": false
+    },
+    
+    {
+      "name": "muluna-graphics",
+      "enabled": false
+    },
+    
+    {
+      "name": "muluna-utility-constants",
+      "enabled": false
+    },
+    
+    {
+      "name": "Muria",
+      "enabled": false
+    },
+    
+    {
+      "name": "Muria-Graphics",
+      "enabled": false
+    },
+    
+    {
+      "name": "naufulglebunusilo",
+      "enabled": false
+    },
+    
+    {
+      "name": "nauvis_platform",
+      "enabled": false
+    },
+    
+    {
+      "name": "new-diagonal-inserter",
+      "enabled": false
+    },
+    
+    {
+      "name": "noangledcables",
+      "enabled": false
+    },
+    
+    {
+      "name": "OilOutpostPlanner",
+      "enabled": false
+    },
+    
+    {
+      "name": "OmegaDrill",
+      "enabled": false
+    },
+    
+    {
+      "name": "omnia",
+      "enabled": false
+    },
+    
+    {
+      "name": "omnilib",
+      "enabled": false
+    },
+    
+    {
+      "name": "OrePatchOrganizer",
+      "enabled": false
+    },
+    
+    {
+      "name": "panglia_planet",
+      "enabled": false
+    },
+    
+    {
+      "name": "panglia_planet_assets",
+      "enabled": false
+    },
+    
+    {
+      "name": "Paracelsin",
+      "enabled": false
+    },
+    
+    {
+      "name": "Paracelsin-Graphics",
+      "enabled": false
+    },
+    
+    {
+      "name": "pelagos",
+      "enabled": false
+    },
+    
+    {
+      "name": "Pi-C_lib",
+      "enabled": false
+    },
+    
+    {
+      "name": "pirateship",
+      "enabled": false
+    },
+    
+    {
+      "name": "planet-cyber",
+      "enabled": false
+    },
+    
+    {
+      "name": "planet-mememium",
+      "enabled": false
+    },
+    
+    {
+      "name": "planet-muluna",
+      "enabled": false
+    },
+    
+    {
+      "name": "planet-rabbasca",
+      "enabled": false
+    },
+    
+    {
+      "name": "planetaris-arig",
+      "enabled": false
+    },
+    
+    {
+      "name": "planetaris-hyarion",
+      "enabled": false
+    },
+    
+    {
+      "name": "planetaris-unbounded",
+      "enabled": false
+    },
+    
+    {
+      "name": "PlanetsLib",
+      "enabled": false
+    },
+    
+    {
+      "name": "pollution-as-surface-property",
+      "enabled": false
+    },
+    
+    {
+      "name": "propertyrandomizer",
+      "enabled": false
+    },
+    
+    {
+      "name": "pump",
+      "enabled": false
+    },
+    
+    {
+      "name": "pyalienlife",
+      "enabled": false
+    },
+    
+    {
+      "name": "pyalienlifegraphics",
+      "enabled": false
+    },
+    
+    {
+      "name": "pyalienlifegraphics2",
+      "enabled": false
+    },
+    
+    {
+      "name": "pyalienlifegraphics3",
+      "enabled": false
+    },
+    
+    {
+      "name": "pyalternativeenergy",
+      "enabled": false
+    },
+    
+    {
+      "name": "pyalternativeenergygraphics",
+      "enabled": false
+    },
+    
+    {
+      "name": "pycoalprocessing",
+      "enabled": false
+    },
+    
+    {
+      "name": "pycoalprocessinggraphics",
+      "enabled": false
+    },
+    
+    {
+      "name": "pyfusionenergy",
+      "enabled": false
+    },
+    
+    {
+      "name": "pyfusionenergygraphics",
+      "enabled": false
+    },
+    
+    {
+      "name": "pyhightech",
+      "enabled": false
+    },
+    
+    {
+      "name": "pyhightechgraphics",
+      "enabled": false
+    },
+    
+    {
+      "name": "pyindustry",
+      "enabled": false
+    },
+    
+    {
+      "name": "pyindustrygraphics",
+      "enabled": false
+    },
+    
+    {
+      "name": "pymodpack",
+      "enabled": false
+    },
+    
+    {
+      "name": "pypetroleumhandling",
+      "enabled": false
+    },
+    
+    {
+      "name": "pypetroleumhandlinggraphics",
+      "enabled": false
+    },
+    
+    {
+      "name": "pypostprocessing",
+      "enabled": false
+    },
+    
+    {
+      "name": "pyrawores",
+      "enabled": false
+    },
+    
+    {
+      "name": "pyraworesgraphics",
+      "enabled": false
+    },
+    
+    {
+      "name": "qol_research",
+      "enabled": false
+    },
+    
+    {
+      "name": "quality-calc",
+      "enabled": false
+    },
+    
+    {
+      "name": "quality-se",
+      "enabled": false
+    },
+    
+    {
+      "name": "quality-seeds-fork",
+      "enabled": false
+    },
+    
+    {
+      "name": "quality-upgrade-planner",
+      "enabled": false
+    },
+    
+    {
+      "name": "QualityPlus",
+      "enabled": false
+    },
+    
+    {
+      "name": "quality_glassware",
+      "enabled": false
+    },
+    
+    {
+      "name": "rabbasca-assets",
+      "enabled": false
+    },
+    
+    {
+      "name": "RateCalculator",
+      "enabled": false
+    },
+    
+    {
+      "name": "rec-blue-plus",
+      "enabled": false
+    },
+    
+    {
+      "name": "recipe-tweaker",
+      "enabled": false
+    },
+    
+    {
+      "name": "RecipeBook",
+      "enabled": false
+    },
+    
+    {
+      "name": "Robocharger-Updated",
+      "enabled": false
+    },
+    
+    {
+      "name": "robot_attrition",
+      "enabled": false
+    },
+    
+    {
+      "name": "Robot_Battery_Research2",
+      "enabled": false
+    },
+    
+    {
+      "name": "rocket-log",
+      "enabled": false
+    },
+    
+    {
+      "name": "RocketCargoInsertion",
+      "enabled": false
+    },
+    
+    {
+      "name": "RPGsystem",
+      "enabled": false
+    },
+    
+    {
+      "name": "rso-mod",
+      "enabled": false
+    },
+    
+    {
+      "name": "rubia",
+      "enabled": false
+    },
+    
+    {
+      "name": "rubia-assets",
+      "enabled": false
+    },
+    
+    {
+      "name": "se-space-trains",
+      "enabled": false
+    },
+    
+    {
+      "name": "secretas",
+      "enabled": false
+    },
+    
+    {
+      "name": "shchierbin",
+      "enabled": false
+    },
+    
+    {
+      "name": "shield-projector",
+      "enabled": false
+    },
+    
+    {
+      "name": "show-max-underground-distance",
+      "enabled": false
+    },
+    
+    {
+      "name": "silo-chest",
+      "enabled": false
+    },
+    
+    {
+      "name": "simultaneous-research",
+      "enabled": false
+    },
+    
+    {
+      "name": "skewer_planet_vesta",
+      "enabled": false
+    },
+    
+    {
+      "name": "skewer_planet_vesta_assets",
+      "enabled": false
+    },
+    
+    {
+      "name": "skewer_planet_vesta_assets_2",
+      "enabled": false
+    },
+    
+    {
+      "name": "slp-dyson-sphere-reworked",
+      "enabled": false
+    },
+    
+    {
+      "name": "Small-Space-Age",
+      "enabled": false
+    },
+    
+    {
+      "name": "snouz-big-accumulator",
+      "enabled": false
+    },
+    
+    {
+      "name": "snouz-big-solar-panel",
+      "enabled": false
+    },
+    
+    {
+      "name": "snouz_better_asteroid_collector",
+      "enabled": false
+    },
+    
+    {
+      "name": "snouz_better_substation",
+      "enabled": false
+    },
+    
+    {
+      "name": "snouz_long_electric_gun_turret",
+      "enabled": false
+    },
+    
+    {
+      "name": "snouz_space_platform_hull",
+      "enabled": false
+    },
+    
+    {
+      "name": "SolarMatrix",
+      "enabled": false
+    },
+    
+    {
+      "name": "some-autoresearch",
+      "enabled": false
+    },
+    
+    {
+      "name": "some-luaconsole",
+      "enabled": false
+    },
+    
+    {
+      "name": "Space-Age-Without-Platforms",
+      "enabled": false
+    },
+    
+    {
+      "name": "space-exploration",
+      "enabled": false
+    },
+    
+    {
+      "name": "space-exploration-graphics",
+      "enabled": false
+    },
+    
+    {
+      "name": "space-exploration-graphics-2",
+      "enabled": false
+    },
+    
+    {
+      "name": "space-exploration-graphics-3",
+      "enabled": false
+    },
+    
+    {
+      "name": "space-exploration-graphics-4",
+      "enabled": false
+    },
+    
+    {
+      "name": "space-exploration-graphics-5",
+      "enabled": false
+    },
+    
+    {
+      "name": "space-exploration-menu-simulations",
+      "enabled": false
+    },
+    
+    {
+      "name": "space-exploration-official-modpack",
+      "enabled": false
+    },
+    
+    {
+      "name": "space-exploration-postprocess",
+      "enabled": false
+    },
+    
+    {
+      "name": "Spaghetorio",
+      "enabled": false
+    },
+    
+    {
+      "name": "SpaghetorioGraphics1",
+      "enabled": false
+    },
+    
+    {
+      "name": "spidertron-unit-07",
+      "enabled": false
+    },
+    
+    {
+      "name": "SpidertronEnhancements",
+      "enabled": false
+    },
+    
+    {
+      "name": "SpidertronPatrols",
+      "enabled": false
+    },
+    
+    {
+      "name": "squeak-through-2",
+      "enabled": false
+    },
+    
+    {
+      "name": "stack-inserters",
+      "enabled": false
+    },
+    
+    {
+      "name": "surface-property-viewer",
+      "enabled": false
+    },
+    
+    {
+      "name": "talandar_cargo_ships_tweaks",
+      "enabled": false
+    },
+    
+    {
+      "name": "tanvec-k2se",
+      "enabled": false
+    },
+    
+    {
+      "name": "tanvec-tweaks",
+      "enabled": false
+    },
+    
+    {
+      "name": "TaskList",
+      "enabled": false
+    },
+    
+    {
+      "name": "tenebris-prime",
+      "enabled": false
+    },
+    
+    {
+      "name": "terrapalus",
+      "enabled": false
+    },
+    
+    {
+      "name": "textplates",
+      "enabled": false
+    },
+    
+    {
+      "name": "the-truck-is-here",
+      "enabled": false
+    },
+    
+    {
+      "name": "thinking_brain",
+      "enabled": false
+    },
+    
+    {
+      "name": "tile-upgrade-planner-muluna",
+      "enabled": false
+    },
+    
+    {
+      "name": "TimeTools",
+      "enabled": false
+    },
+    
+    {
+      "name": "Todo-List",
+      "enabled": false
+    },
+    
+    {
+      "name": "train-log",
+      "enabled": false
+    },
+    
+    {
+      "name": "train-trails",
+      "enabled": false
+    },
+    
+    {
+      "name": "turret-activation-delay",
+      "enabled": false
+    },
+    
+    {
+      "name": "UltimateResearchQueue2",
+      "enabled": false
+    },
+    
+    {
+      "name": "undo-bob",
+      "enabled": false
+    },
+    
+    {
+      "name": "UnlimitedProductivityFork",
+      "enabled": false
+    },
+    
+    {
+      "name": "ups-fps",
+      "enabled": false
+    },
+    
+    {
+      "name": "virentis",
+      "enabled": false
+    },
+    
+    {
+      "name": "virentis-graphics",
+      "enabled": false
+    },
+    
+    {
+      "name": "VoidChestInstant",
+      "enabled": false
+    },
+    
+    {
+      "name": "Voidcraft",
+      "enabled": false
+    },
+    
+    {
+      "name": "vulcanus-sulfuric-bacteria",
+      "enabled": false
+    },
+    
+    {
+      "name": "WaterExtractor",
+      "enabled": false
+    },
+    
+    {
+      "name": "WideChests",
+      "enabled": false
+    },
+    
+    {
+      "name": "WideChestsLogistic",
+      "enabled": false
+    },
+    
+    {
+      "name": "Wood-Walls",
+      "enabled": false
+    },
+    
+    {
+      "name": "wooden_platform",
+      "enabled": false
+    },
+    
+    {
+      "name": "Wr_Enhanced_Map_Colors",
+      "enabled": false
+    },
+    
+    {
+      "name": "xp-for-buildings-tanvec-fork",
+      "enabled": false
+    },
+    
+    {
+      "name": "YARM",
+      "enabled": false
+    },
+    
+    {
+      "name": "zzz-no-or-in-recipe-categories",
+      "enabled": false
+    },
+    
+    {
+      "name": "zzz-nonstandard-beacons",
+      "enabled": false
+    }
+  ]
+}

@@ -277,6 +277,8 @@ pub fn extract_base_glossary(game_data_path: &Path) -> anyhow::Result<ini::Ini> 
 
     let mut glossary = ini::Ini::new();
 
+    let mut sections_found = std::collections::HashSet::new();
+
     for mod_name in OFFICIAL_MODS {
         let mod_locale = game_data_path.join(mod_name).join("locale");
         let en_dir = mod_locale.join("en");
@@ -309,6 +311,9 @@ pub fn extract_base_glossary(game_data_path: &Path) -> anyhow::Result<ini::Ini> 
             };
 
             for (section, props) in en_ini.iter() {
+                if let Some(sec) = section {
+                    sections_found.insert(sec.to_string());
+                }
                 if section.is_none_or(|s| !s.contains("name")) {
                     continue;
                 }
@@ -329,21 +334,20 @@ pub fn extract_base_glossary(game_data_path: &Path) -> anyhow::Result<ini::Ini> 
             }
         }
     }
-
     Ok(glossary)
 }
 
 /// 提取原版游戏中所有官方 mod 的 locale key 集合（用于检测 mod 翻译是否覆盖原版）。
-pub fn extract_base_keys(game_data_path: &Path) -> anyhow::Result<std::collections::HashSet<String>> {
+pub fn extract_base_all(game_data_path: &Path) -> anyhow::Result<std::collections::HashMap<String, String>> {
     const OFFICIAL_MODS: &[&str] = &[
         "core", "base", "quality", "elevated-rails", "space-age", "recycler",
     ];
-    let mut keys = std::collections::HashSet::new();
+    let mut keys = std::collections::HashMap::new();
     for mod_name in OFFICIAL_MODS {
-        let en_dir = game_data_path.join(mod_name).join("locale").join("en");
+        let en_dir = game_data_path.join(mod_name).join("locale").join("zh-CN");
         if !en_dir.exists() { continue; }
         for entry in std::fs::read_dir(&en_dir)
-            .with_context(|| format!("无法读取 {} 的英文 locale: {:?}", mod_name, en_dir))?
+            .with_context(|| format!("无法读取 {} 的中文 locale: {:?}", mod_name, en_dir))?
         {
             let entry = entry?;
             let path = entry.path();
@@ -352,8 +356,8 @@ pub fn extract_base_keys(game_data_path: &Path) -> anyhow::Result<std::collectio
             let ini = translation::str_to_ini(&content)?;
             for (section, props) in ini.iter() {
                 let sec_prefix = section.map_or_else(String::new, |s| format!("{}.", s));
-                for (key, _) in props.iter() {
-                    keys.insert(format!("{}{}", sec_prefix, key));
+                for (key, value) in props.iter() {
+                    keys.insert(format!("{}{}", sec_prefix, key), value.to_string());
                 }
             }
         }
@@ -367,10 +371,10 @@ fn test_extract_base_glossary() -> anyhow::Result<()> {
     let game_data_path = std::env::var("FACTORIO_DATA_PATH")
         .map(PathBuf::from)
         .expect("请设置 FACTORIO_DATA_PATH 环境变量指向游戏数据目录");
-    dbg!(&game_data_path);
+    // dbg!(&game_data_path);
     let glossary = extract_base_glossary(&game_data_path).expect("提取对照表失败");
     dbg!(&glossary);
-    println!("{}", translation::ini_to_str(&glossary)?);
+    // println!("{}", translation::ini_to_str(&glossary)?);
     Ok(())
 }
 

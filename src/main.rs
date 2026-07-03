@@ -140,7 +140,7 @@ async fn main() -> anyhow::Result<()> {
             let base_keys = if protect {
                 let game_data_path = std::env::var("FACTORIO_DATA_PATH")
                     .context("protect 模式需要设置 FACTORIO_DATA_PATH 环境变量")?;
-                Some(flow::extract_base_keys(Path::new(&game_data_path))?)
+                Some(flow::extract_base_all(Path::new(&game_data_path))?)
             } else {
                 None
             };
