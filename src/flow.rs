@@ -617,10 +617,6 @@ fn make_translation_tools() -> Vec<ToolObject> {
                             "type": "string",
                             "description": "翻译键（key）"
                         },
-                        "original": {
-                            "type": "string",
-                            "description": "英文原文（仅用于传递参数时辅助你思考）"
-                        },
                         "translation": {
                             "type": "string",
                             "description": "中文翻译（value）"
