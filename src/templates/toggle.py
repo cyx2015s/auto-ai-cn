@@ -17,19 +17,36 @@ def main():
     with open(mod_list_json_path, 'r', encoding='utf-8') as f:
         mod_list = json.load(f)
 
-    for mod in mod_list["mods"]:
-        mod_name = mod['name']
-        enabled = mod['enabled']
-        disabled_name = f"{mod_name}.disabled"
-        enabled_name = f"{mod_name}.cfg"
-        print(f"正在处理 {mod_name}...")
-        if enabled:
-            # 如果mod启用，确保文件名是enabled_name
-            if os.path.exists(disabled_name):
-                os.rename(disabled_name, enabled_name)
-        else:
-            # 如果mod禁用，确保文件名是disabled_name
-            if os.path.exists(enabled_name):
-                os.rename(enabled_name, disabled_name)
+    for file in Path(__file__).parent.iterdir():
+        if file.is_file() and (file.suffix == ".cfg" or file.suffix == ".disabled"):
+            print(f"正在处理 {file.name}...")
+            mod_name = file.stem
+            mod_info = next(
+                (mod for mod in mod_list["mods"] if mod["name"] == mod_name), None
+            )
+            if mod_info is not None:
+                enabled = mod_info["enabled"]
+                disabled_name = f"{mod_name}.cfg.disabled"
+                enabled_name = f"{mod_name}.cfg"
+                if enabled:
+                    # 如果mod启用，确保文件名是enabled_name
+                    if file.name != enabled_name:
+                        new_path = file.parent / enabled_name
+                        print(f"重命名 {file.name} 为 {enabled_name}")
+                        os.rename(file, new_path)
+                else:
+                    # 如果mod禁用，确保文件名是disabled_name
+                    if file.name != disabled_name:
+                        new_path = file.parent / disabled_name
+                        print(f"重命名 {file.name} 为 {disabled_name}")
+                        os.rename(file, new_path)
+            else:
+                if file.name.endswith(".cfg.disabled"):
+                    # 如果文件名已经是.disabled，保持不变
+                    continue
+                else:
+                    print(f"重命名 {file.name} 为 {file.stem}.cfg.disabled")
+                    os.rename(file, file.with_suffix(".cfg.disabled"))
+
 
 main()
