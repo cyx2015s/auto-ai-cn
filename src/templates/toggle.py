@@ -11,20 +11,24 @@ import json
 import os
 from pathlib import Path
 
+
 def main():
-    mod_list_json_path = Path(__file__).parent.parent.parent.parent / 'mod-list.json'
+    mod_list_json_path = Path(__file__).parent.parent.parent.parent / "mod-list.json"
     print(f"正在读取 {mod_list_json_path}...")
-    with open(mod_list_json_path, 'r', encoding='utf-8') as f:
+    with open(mod_list_json_path, "r", encoding="utf-8") as f:
         mod_list = json.load(f)
 
     for file in Path(__file__).parent.iterdir():
         if file.is_file() and (file.suffix == ".cfg" or file.suffix == ".disabled"):
-            print(f"正在处理 {file.name}...")
+            # print(f"正在处理 {file.name}...")
             mod_name = file.stem
+            if mod_name.endswith(".cfg"):
+                mod_name = mod_name[:-4]  # 去掉 .cfg 后缀
             mod_info = next(
                 (mod for mod in mod_list["mods"] if mod["name"] == mod_name), None
             )
             if mod_info is not None:
+                print(f"找到mod {mod_name}，enabled={mod_info['enabled']}")
                 enabled = mod_info["enabled"]
                 disabled_name = f"{mod_name}.cfg.disabled"
                 enabled_name = f"{mod_name}.cfg"
