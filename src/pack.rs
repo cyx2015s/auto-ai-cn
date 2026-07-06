@@ -124,8 +124,8 @@ pub fn pack_all_to_one_mod(
         {
             let overlaps = has_base_overlap(&merged_ini, base_keys);
             if overlaps {
-                info!("  ↳ {} 覆盖原版翻译，标记为 .cfg.disable", mod_name);
-                "cfg.disable"
+                info!("  ↳ {} 覆盖原版翻译，标记为 .cfg.disabled", mod_name);
+                "cfg.disabled"
             } else {
                 "cfg"
             }

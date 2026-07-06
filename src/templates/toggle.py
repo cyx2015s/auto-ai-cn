@@ -24,6 +24,7 @@ def main():
             mod_name = file.stem
             if mod_name.endswith(".cfg"):
                 mod_name = mod_name[:-4]  # 去掉 .cfg 后缀
+            print(f"正在处理 {file.name}，对应mod名称为 {mod_name}...")
             mod_info = next(
                 (mod for mod in mod_list["mods"] if mod["name"] == mod_name), None
             )
