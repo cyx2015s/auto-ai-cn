@@ -427,6 +427,7 @@ const BASE_GAME_PROTECTED_SECTIONS: &[&str] = &[
     "gui-surface-list",
     "gui-map-editor-tool",
     "graphics-errors",
+    "",
 ];
 
 fn is_protected(s: &str) -> bool {
