@@ -119,9 +119,7 @@ pub fn pack_all_to_one_mod(
         let ini_str = translation::ini_to_str(&merged_ini)?;
 
         // protect 模式下检查是否覆盖原版 key
-        let suffix = if protect
-            && let Some(base_keys) = base_keys
-        {
+        let suffix = if protect && let Some(base_keys) = base_keys {
             let overlaps = has_base_overlap(&merged_ini, base_keys);
             if overlaps {
                 info!("  ↳ {} 覆盖原版翻译，标记为 .cfg.disabled", mod_name);
@@ -442,8 +440,16 @@ fn has_base_overlap(ini: &ini::Ini, base_keys: &std::collections::HashMap<String
         }
         let sec_prefix = section.map_or_else(String::new, |s| format!("{}.", s));
         for (key, value) in props.iter() {
-            if let Some(base_value) = base_keys.get(&format!("{}{}", sec_prefix, key)) && base_value != value {
-                log::debug!("覆盖原版 key: {}{} ({} != {})", sec_prefix, key, value, base_value);
+            if let Some(base_value) = base_keys.get(&format!("{}{}", sec_prefix, key))
+                && base_value != value
+            {
+                log::debug!(
+                    "覆盖原版 key: {}{} ({} != {})",
+                    sec_prefix,
+                    key,
+                    value,
+                    base_value
+                );
                 return true;
             }
         }

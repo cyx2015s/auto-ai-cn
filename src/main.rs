@@ -1,9 +1,13 @@
-use std::{io::Read, path::{Path, PathBuf}, str::FromStr};
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
 use anyhow::Context;
 use chrono::{DateTime, Duration, Utc};
 use clap::{Parser, Subcommand};
-use log::{info, LevelFilter::Debug};
+use log::{LevelFilter::Debug, info};
 
 use crate::flow::FlowConfig;
 
@@ -74,11 +78,15 @@ fn parse_since(s: &str) -> Result<DateTime<Utc>, String> {
         return Ok(Utc::now() - Duration::days(days));
     }
     if let Some(rest) = s.strip_suffix('h') {
-        let hours: i64 = rest.parse().map_err(|_| format!("无效的小时数: {}", rest))?;
+        let hours: i64 = rest
+            .parse()
+            .map_err(|_| format!("无效的小时数: {}", rest))?;
         return Ok(Utc::now() - Duration::hours(hours));
     }
     if let Some(rest) = s.strip_suffix('m') {
-        let minutes: i64 = rest.parse().map_err(|_| format!("无效的分钟数: {}", rest))?;
+        let minutes: i64 = rest
+            .parse()
+            .map_err(|_| format!("无效的分钟数: {}", rest))?;
         return Ok(Utc::now() - Duration::minutes(minutes));
     }
     DateTime::from_str(s).map_err(|e| format!("无法解析时间 '{}': {}", s, e))
@@ -110,8 +118,8 @@ async fn main() -> anyhow::Result<()> {
             if let Some(ref path) = mod_list {
                 let content = std::fs::read_to_string(path)
                     .with_context(|| format!("无法读取 mod-list.json: {}", path.display()))?;
-                let json: serde_json::Value = serde_json::from_str(&content)
-                    .context("无法解析 mod-list.json")?;
+                let json: serde_json::Value =
+                    serde_json::from_str(&content).context("无法解析 mod-list.json")?;
                 if let Some(list) = json["mods"].as_array() {
                     for m in list {
                         if m["enabled"].as_bool().unwrap_or(true) {
@@ -123,11 +131,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
-            let mod_names: Option<Vec<String>> = if mods.is_empty() {
-                None
-            } else {
-                Some(mods)
-            };
+            let mod_names: Option<Vec<String>> = if mods.is_empty() { None } else { Some(mods) };
             flow::run_translation_pipeline(config, since, limit, mod_names.as_deref()).await?;
         }
 
@@ -144,13 +148,7 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 None
             };
-            pack::pack_all_to_one_mod(
-                &cache_dir,
-                &output_dir,
-                &name,
-                protect,
-                base_keys.as_ref(),
-            )?;
+            pack::pack_all_to_one_mod(&cache_dir, &output_dir, &name, protect, base_keys.as_ref())?;
         }
 
         Some(Command::Upload { file }) => {
@@ -162,8 +160,7 @@ async fn main() -> anyhow::Result<()> {
 
             // 从 zip 中的 info.json 提取 mod 名称
             let cursor = std::io::Cursor::new(&zip_data);
-            let mut archive = zip::ZipArchive::new(cursor)
-                .context("无法打开 zip 文件")?;
+            let mut archive = zip::ZipArchive::new(cursor).context("无法打开 zip 文件")?;
             let mod_name = {
                 let mut found_name = None;
                 for i in 0..archive.len() {
@@ -188,9 +185,7 @@ async fn main() -> anyhow::Result<()> {
             info!("准备上传 mod: {} (文件: {})", mod_name, file.display());
 
             let client = factorio_api::FactorioWebClient::anonymous();
-            client
-                .upload_mod(&api_key, &mod_name, &zip_data)
-                .await?;
+            client.upload_mod(&api_key, &mod_name, &zip_data).await?;
             info!("上传成功: {}", mod_name);
         }
     }

@@ -1,3 +1,5 @@
+use serde_json::ser::PrettyFormatter;
+
 pub struct Persistent<T, S>
 where
     T: serde::Serialize,
@@ -27,7 +29,7 @@ where
 
 pub fn persistent_via_file_with_default<T, P>(
     path: P,
-) -> Persistent<T, serde_json::Serializer<std::fs::File>>
+) -> Persistent<T, serde_json::Serializer<std::fs::File, PrettyFormatter<'static>>>
 where
     T: serde::Serialize + serde::de::DeserializeOwned + Default,
     P: AsRef<std::path::Path>,
@@ -38,7 +40,7 @@ where
 pub fn persistent_via_file<T, P>(
     value: T,
     path: P,
-) -> Persistent<T, serde_json::Serializer<std::fs::File>>
+) -> Persistent<T, serde_json::Serializer<std::fs::File, PrettyFormatter<'static>>>
 where
     T: serde::Serialize + serde::de::DeserializeOwned,
     P: AsRef<std::path::Path>,
@@ -49,7 +51,7 @@ where
         .create(true)
         .open(&path)
         .expect("...");
-    Persistent::new(value, serde_json::Serializer::new(file))
+    Persistent::new(value, serde_json::Serializer::pretty(file))
 }
 
 impl<T, S> Drop for Persistent<T, S>
@@ -97,7 +99,7 @@ mod tests {
     #[test]
     fn test_persistent() {
         let mut output = Vec::new();
-        let serializer = Serializer::new(&mut output);
+        let serializer = Serializer::pretty(&mut output);
         {
             let mut persistent_vec = Persistent::new(vec![1, 2, 3], serializer);
             persistent_vec.push(4);

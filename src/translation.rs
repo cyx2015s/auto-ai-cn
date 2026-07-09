@@ -21,11 +21,7 @@ pub fn str_to_ini(s: &str) -> anyhow::Result<ini::Ini> {
         .map(|line| {
             let trimmed = line.trim_start();
             // 保留空行，非空行用 trim 后的版本
-            if trimmed.is_empty() {
-                line
-            } else {
-                trimmed
-            }
+            if trimmed.is_empty() { line } else { trimmed }
         })
         .collect::<Vec<_>>()
         .join("\n");

@@ -203,6 +203,9 @@ pub fn extract_locale_from_zip(zip_bytes: &[u8]) -> anyhow::Result<LocaleInfo> {
             if parts.len() == 2 {
                 let lang_code = parts[0].to_string();
                 let file_name = parts[1].to_string();
+                if !(lang_code == "en" || lang_code == "zh-CN") {
+                    continue;
+                }
                 if file_name.ends_with(".cfg") {
                     let mut content = String::new();
                     file.read_to_string(&mut content)?;
@@ -338,20 +341,31 @@ pub fn extract_base_glossary(game_data_path: &Path) -> anyhow::Result<ini::Ini> 
 }
 
 /// 提取原版游戏中所有官方 mod 的 locale key 集合（用于检测 mod 翻译是否覆盖原版）。
-pub fn extract_base_all(game_data_path: &Path) -> anyhow::Result<std::collections::HashMap<String, String>> {
+pub fn extract_base_all(
+    game_data_path: &Path,
+) -> anyhow::Result<std::collections::HashMap<String, String>> {
     const OFFICIAL_MODS: &[&str] = &[
-        "core", "base", "quality", "elevated-rails", "space-age", "recycler",
+        "core",
+        "base",
+        "quality",
+        "elevated-rails",
+        "space-age",
+        "recycler",
     ];
     let mut keys = std::collections::HashMap::new();
     for mod_name in OFFICIAL_MODS {
         let en_dir = game_data_path.join(mod_name).join("locale").join("zh-CN");
-        if !en_dir.exists() { continue; }
+        if !en_dir.exists() {
+            continue;
+        }
         for entry in std::fs::read_dir(&en_dir)
             .with_context(|| format!("无法读取 {} 的中文 locale: {:?}", mod_name, en_dir))?
         {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().map_or(true, |e| e != "cfg") { continue; }
+            if path.extension().map_or(true, |e| e != "cfg") {
+                continue;
+            }
             let content = std::fs::read_to_string(&path)?;
             let ini = translation::str_to_ini(&content)?;
             for (section, props) in ini.iter() {
@@ -835,34 +849,62 @@ pub async fn call_llm_for_translation(
                                     // 模式 1：整文件 INI 文本提交
                                     if let Some(ref ini_content) = submitted.ini_content {
                                         let ini = translation::str_to_ini(ini_content)?;
+                                        let mut has_chinese_count = 0;
                                         for (sec, props) in ini.iter() {
                                             for (k, v) in props.iter() {
+                                                if v.chars()
+                                                    .any(|c| c >= '\u{4e00}' && c <= '\u{9fff}')
+                                                {
+                                                    has_chinese_count += 1;
+                                                }
                                                 result_ini.with_section(sec).set(k, v);
                                                 merged_count += 1;
                                             }
                                         }
                                         debug!(
-                                            "收到整文件翻译: file={}, sections={}, entries={}",
+                                            "收到整文件翻译: file={}, sections={}, entries={}, chinese_characters={}",
                                             submitted.file_name,
                                             ini.iter().count(),
-                                            merged_count
+                                            merged_count,
+                                            has_chinese_count
                                         );
+
                                         has_valid_call = true;
-                                        messages.push(MessageRequest::Tool(
-                                            ToolMessageRequest::new(
+                                        if has_chinese_count == 0 && merged_count > 0 {
+                                            warn!(
+                                                "整文件翻译中没有检测到中文字符: file={}, entries={:?}",
+                                                submitted.file_name, submitted.ini_content
+                                            );
+                                            messages.push(MessageRequest::Tool(ToolMessageRequest::new(
                                                 &format!(
-                                                    "已收到 {} 的整文件翻译（{} 条）",
+                                                    "警告：整文件翻译中没有检测到中文字符，请检查翻译内容是否正确: {} (已收到 {} 条)",
                                                     submitted.file_name, merged_count
                                                 ),
                                                 &tool_call.id,
-                                            ),
-                                        ));
+                                            )));
+                                        } else {
+                                            messages.push(MessageRequest::Tool(
+                                                ToolMessageRequest::new(
+                                                    &format!(
+                                                        "已收到 {} 的整文件翻译（{} 条）",
+                                                        submitted.file_name, merged_count
+                                                    ),
+                                                    &tool_call.id,
+                                                ),
+                                            ));
+                                        }
                                     }
                                     // 模式 2：按 section 提交
                                     else if let (Some(section), Some(entries)) =
                                         (&submitted.section, &submitted.entries)
                                     {
+                                        let mut has_chinese_count = 0;
                                         for entry in entries {
+                                            has_chinese_count += entry
+                                                .translation
+                                                .chars()
+                                                .any(|c| c > '\u{4e00}' && c <= '\u{9fff}')
+                                                as usize;
                                             result_ini
                                                 .with_section(Some(section.as_str()))
                                                 .set(&entry.key, &entry.translation);
@@ -873,15 +915,29 @@ pub async fn call_llm_for_translation(
                                             submitted.file_name, section, merged_count
                                         );
                                         has_valid_call = true;
-                                        messages.push(MessageRequest::Tool(
-                                            ToolMessageRequest::new(
+                                        if has_chinese_count == 0 && merged_count > 0 {
+                                            warn!(
+                                                "翻译中没有检测到中文字符: file={}, section={}, entries={:?}",
+                                                submitted.file_name, section, entries
+                                            );
+                                            messages.push(MessageRequest::Tool(ToolMessageRequest::new(
                                                 &format!(
-                                                    "已收到 {} 的 {} 下 {} 条翻译",
-                                                    submitted.file_name, section, merged_count
+                                                    "警告：翻译中没有检测到中文字符，请检查翻译内容是否正确: {} 下 {} 条",
+                                                    section, merged_count
                                                 ),
                                                 &tool_call.id,
-                                            ),
-                                        ));
+                                            )));
+                                        } else {
+                                            messages.push(MessageRequest::Tool(
+                                                ToolMessageRequest::new(
+                                                    &format!(
+                                                        "已收到 {} 的 {} 下 {} 条翻译",
+                                                        submitted.file_name, section, merged_count
+                                                    ),
+                                                    &tool_call.id,
+                                                ),
+                                            ));
+                                        }
                                     } else {
                                         // 格式无效：没有 ini_content 也没有 section+entries
                                         warn!(
@@ -1166,7 +1222,8 @@ async fn process_mod(
 
             // 以自带 zh-CN 文件为基准，用 en 原文作为 key 参考进行合并
             for (file_name, builtin_content) in &builtin_target.contents {
-                let builtin_ini = translation::str_to_ini(builtin_content).with_context(|| file_name.clone())?;
+                let builtin_ini =
+                    translation::str_to_ini(builtin_content).with_context(|| file_name.clone())?;
                 let en_ini = source_lang_info
                     .contents
                     .get(file_name)
