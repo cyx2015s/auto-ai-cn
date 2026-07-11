@@ -1491,6 +1491,7 @@ pub async fn run_translation_pipeline(
 
     let is_auto = mod_names.is_none();
     let mut processed = 0;
+    let mut failed = Vec::new();
     for mod_entry in &updated_mods {
         if is_auto
             && let Some(limit) = limit
@@ -1522,6 +1523,7 @@ pub async fn run_translation_pipeline(
             Ok(()) => processed += 1,
             Err(e) => {
                 error!("处理 mod {} 失败: {:?}", mod_entry.name, e);
+                failed.push(mod_entry.name.clone());
                 // 继续处理下一个
             }
         }
@@ -1545,6 +1547,11 @@ pub async fn run_translation_pipeline(
         info!("翻译完成 — 处理了 {} 个 mod", processed);
     }
 
+    if failed.is_empty() {
+        info!("所有 mod 处理成功");
+    } else {
+        warn!("以下 mod 处理失败: {:?}", failed);
+    }
     // 保存 AI 术语表
     {
         let glossary_str = translation::ini_to_str(&ai_glossary)?;

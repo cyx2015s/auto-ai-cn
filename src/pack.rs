@@ -429,7 +429,7 @@ const BASE_GAME_PROTECTED_SECTIONS: &[&str] = &[
 ];
 
 fn is_protected(s: &str) -> bool {
-    BASE_GAME_PROTECTED_SECTIONS.contains(&s) && !s.starts_with("gui")
+    BASE_GAME_PROTECTED_SECTIONS.contains(&s)
 }
 
 /// 检查 INI 中是否有任何 key 出现在原版 key 集合中
