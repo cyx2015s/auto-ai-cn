@@ -591,10 +591,10 @@ ghost表示没有完成建筑的建筑时，翻译为「虚影」。
 5. 使用简体中文书写风格
 ## 交互
 
-- 使用 submit_translation 函数，传入 file_name + ini_content 一次性提交整个文件的翻译
-- ini_content 应为标准 INI 格式文本，保留原文的 section 结构和 key，只将 value 翻译为中文
+- 使用 submit_translation 函数，传入 file_name + ini_content 一次性提交整个文件的简体中文翻译
+- ini_content 应为标准 INI 格式文本，保留原文的 section 结构和 key，只将值翻译为中文存在 value 中
 - 如果文件过大，可以按 section 分批提交（传入 section + entries），单个 section 也可以划分为多次函数调用提交
-- 遇到虚构的名称，请额外使用 submit_glossary 函数提交其翻译，格式为 term（英文）+ translation（中文），可选 reason 字段说明判断依据"#;
+- 遇到虚构的名称，请额外使用 submit_glossary 函数提交其翻译，格式为 term（英文） + translation（中文），可选 reason 字段说明判断依据"#;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Step 3: 构建 Function Calling 的工具定义
