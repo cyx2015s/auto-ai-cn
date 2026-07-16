@@ -9,12 +9,8 @@ use chrono::{DateTime, Duration, Utc};
 use clap::{Parser, Subcommand};
 use log::{LevelFilter::Debug, info};
 
-use crate::flow::FlowConfig;
-
-pub mod flow;
-pub mod pack;
-pub mod persistent;
-pub mod translation;
+use tanvec_ai_cn::flow::FlowConfig;
+use tanvec_ai_cn::{flow, pack};
 
 /// Tanvec AI CN — 异星工厂模组自动汉化工具
 #[derive(Parser, Debug)]
@@ -59,7 +55,7 @@ enum Command {
         #[arg(long, default_value = "tanvec-ai-cn")]
         name: String,
 
-        /// 保护模式：覆盖原版翻译的 mod 自动标记为 .cfg.disable
+        /// 保护模式：覆盖原版翻译的 mod 自动标记为 .cfg.disabled
         #[arg(long)]
         protect: bool,
     },

@@ -5,6 +5,15 @@ members = ["factorio-api", "share_mod"]
 name = "tanvec-ai-cn"
 version = "0.1.0"
 edition = "2024"
+default-run = "tanvec-ai-cn"
+
+[[bin]]
+name = "tanvec-ai-cn"
+path = "src/main.rs"
+
+[[bin]]
+name = "gavin-server"
+path = "src/bin/gavin_server.rs"
 
 [dependencies]
 log = "0.4.33"

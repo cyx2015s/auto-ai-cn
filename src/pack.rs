@@ -28,7 +28,7 @@ use crate::translation;
 /// 每个源 mod 的 zh-CN 翻译合并为一个 `.cfg` 文件。
 ///
 /// 如果 `protect` 为 true 且提供了 `base_keys`，检测到 mod 翻译覆盖原版 key 时，
-/// 后缀用 `.cfg.disable` 而非 `.cfg`，避免覆盖原版翻译。
+/// 后缀用 `.cfg.disabled` 而非 `.cfg`，避免覆盖原版翻译。
 pub fn pack_all_to_one_mod(
     cache_dir: &Path,
     output_dir: &Path,
