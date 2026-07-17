@@ -943,7 +943,7 @@ mod tests {
             page_size: Some(PageSize::Size(3)),
             page: Some(1),
             hide_deprecated: Some(true),
-            version: Some("2.0.76".to_string()),
+            version: Some("2.1".to_string()),
             ..Default::default()
         };
         let resp = client.list_mods(Some(&query)).await?;
@@ -1009,7 +1009,7 @@ mod tests {
             .unwrap();
         dbg!(since);
         let mods = client
-            .get_mods_updated_since(since, "2.0.76", Some(50), Some(50))
+            .get_mods_updated_since(since, "2.1", Some(50), Some(50))
             .await?;
         println!("{} 之后更新的模组:", since);
         for m in mods {

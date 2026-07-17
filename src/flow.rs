@@ -130,7 +130,7 @@ impl FlowConfig {
         dotenvy::dotenv().ok();
 
         let game_version =
-            std::env::var("FACTORIO_VERSION").unwrap_or_else(|_| "2.0.76".to_string());
+            std::env::var("FACTORIO_VERSION").unwrap_or_else(|_| "2.1".to_string());
 
         let cache_dir = std::env::var("TANVEC_CACHE_DIR")
             .map(PathBuf::from)
@@ -1507,6 +1507,10 @@ pub async fn run_translation_pipeline(
         {
             info!("已达到处理上限 ({})，停止", limit);
             break;
+        }
+        if mod_entry.category.as_deref().is_some_and(|s| s == "localizations") {
+            info!("跳过 mod {}（localizations 分类）", mod_entry.name);
+            continue;
         }
 
         // 每次处理前重新合并基础对照表 + AI 术语表（AI 可能在之前的 mod 中新增了术语）
