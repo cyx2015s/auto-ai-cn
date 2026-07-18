@@ -129,8 +129,7 @@ impl FlowConfig {
     pub fn from_env() -> anyhow::Result<Self> {
         dotenvy::dotenv().ok();
 
-        let game_version =
-            std::env::var("FACTORIO_VERSION").unwrap_or_else(|_| "2.1".to_string());
+        let game_version = std::env::var("FACTORIO_VERSION").unwrap_or_else(|_| "2.1".to_string());
 
         let cache_dir = std::env::var("TANVEC_CACHE_DIR")
             .map(PathBuf::from)
@@ -624,15 +623,15 @@ fn make_translation_tools() -> Vec<ToolObject> {
             },
             "ini_content": {
                 "type": "string",
-                "description": "完整的 INI 格式翻译文本。保留 section 结构和 key，只将 value 翻译为中文。推荐使用此方式一次性提交整个文件。"
+                "description": "完整的 INI 格式翻译文本。保留 section 结构和 key，只将 value 翻译为中文。推荐使用此方式一次性提交整个文件。这项参数不为空时会忽略 section 和 entries。如\n\n```ini\n[item-name]\niron-plate=铁板\ncopper-plate=铜板\n```\n"
             },
             "section": {
                 "type": "string",
-                "description": "INI section 名称，例如 'entity-name'。仅在按 section 分批提交时使用，与 entries 配合。"
+                "description": "INI section 名称，例如 'entity-name'。仅在按 section 分批提交时使用，与 entries 配合。仅当 ini_content 为空时有效。"
             },
             "entries": {
                 "type": "array",
-                "description": "该 section 下的翻译条目。仅在按 section 分批提交时使用，与 section 配合。",
+                "description": "该 section 下的翻译条目。仅在按 section 分批提交时使用，与 section 配合。仅当 ini_content 为空时有效。",
                 "items": {
                     "type": "object",
                     "properties": {
@@ -1508,7 +1507,11 @@ pub async fn run_translation_pipeline(
             info!("已达到处理上限 ({})，停止", limit);
             break;
         }
-        if mod_entry.category.as_deref().is_some_and(|s| s == "localizations") {
+        if mod_entry
+            .category
+            .as_deref()
+            .is_some_and(|s| s == "localizations")
+        {
             info!("跳过 mod {}（localizations 分类）", mod_entry.name);
             continue;
         }
