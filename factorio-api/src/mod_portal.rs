@@ -596,6 +596,32 @@ impl FactorioWebClient {
         self.download_mod(&release.download_url).await
     }
 
+    /// 获取下载请求的原始 Response（调用方自行流式读取，可用于显示进度）。
+    pub async fn download_mod_response(
+        &self,
+        download_url: &str,
+    ) -> anyhow::Result<reqwest::Response> {
+        let url = format!("{MOD_BASE}{download_url}");
+        let resp = self
+            .client
+            .get(&url)
+            .query(&[
+                ("username", self.config.user.as_str()),
+                ("token", self.config.token.as_str()),
+            ])
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            if let Ok(err) = serde_json::from_str::<ErrorResponse>(&text) {
+                return Err(anyhow::anyhow!("下载错误 ({}): {}", status, err.message));
+            }
+            return Err(anyhow::anyhow!("下载错误 ({}): {}", status, text));
+        }
+        Ok(resp)
+    }
+
     /// 将下载的模组保存到本地文件
     pub async fn download_and_save(
         &self,

@@ -7,7 +7,6 @@ use std::{
 use anyhow::Context;
 use chrono::{DateTime, Duration, Utc};
 use clap::{Parser, Subcommand};
-use indicatif::MultiProgress;
 use log::{LevelFilter::Debug, info};
 
 use tanvec_ai_cn::flow::FlowConfig;
@@ -94,11 +93,10 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     let logger = env_logger::builder().filter_level(Debug).build();
     let level = logger.filter();
-    let multi = MultiProgress::new();
-    indicatif_log_bridge::LogWrapper::new(multi, logger).try_init()?;
+    indicatif_log_bridge::LogWrapper::new(tanvec_ai_cn::progress::MULTI.clone(), logger)
+        .try_init()?;
     log::set_max_level(level);
     let cli = Cli::parse();
-
     match cli.command {
         // 无子命令 → 默认翻译
         None => {

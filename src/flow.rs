@@ -67,6 +67,7 @@ use deepseek_api::{
     response::FinishReason,
 };
 use factorio_api::FactorioWebClient;
+use futures_util::StreamExt;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 
@@ -1090,6 +1091,29 @@ const TARGET_LANG: &str = "zh-CN";
 /// 当前固定从 en 翻译到 zh-CN：
 /// - 如果 mod 只有 zh-CN 没有 en → 中文优先 mod，跳过
 /// - 如果 mod 没有 en → 无法翻译，跳过
+
+/// 流式下载（自动使用全局进度条，完成后自动消失）
+async fn stream_download(resp: reqwest::Response) -> anyhow::Result<Vec<u8>> {
+    let total = resp.content_length().unwrap_or(0);
+    let pb = crate::progress::MULTI.add(indicatif::ProgressBar::new(total));
+    pb.set_style(
+        indicatif::ProgressStyle::with_template(
+            "{bar:40.green/white} {bytes}/{total_bytes} 下载中",
+        )
+        .unwrap()
+        .progress_chars("##-"),
+    );
+    let mut data = Vec::with_capacity(total as usize);
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| anyhow::anyhow!("下载错误: {}", e))?;
+        pb.inc(chunk.len() as u64);
+        data.extend_from_slice(&chunk);
+    }
+    pb.finish_and_clear();
+    Ok(data)
+}
+
 async fn process_mod(
     client_fa: &FactorioWebClient,
     client_deepseek: &deepseek_api::DeepSeekClient,
@@ -1133,13 +1157,16 @@ async fn process_mod(
         }
     };
 
-    // 3. 下载 mod 并提取翻译文件
-    let zip_data = if let Some(ref release) = mod_info.latest_release {
-        client_fa.download_release(release).await?
-    } else if let Some(ref releases) = mod_info.releases
-        && let Some(latest) = releases.last()
-    {
-        client_fa.download_release(latest).await?
+    // 3. 下载 mod 并提取翻译文件（流式 + 进度条）
+    let release_dl = mod_info
+        .latest_release
+        .as_ref()
+        .or_else(|| mod_info.releases.as_ref().and_then(|r| r.last()));
+    let zip_data = if let Some(release) = release_dl {
+        let resp = client_fa
+            .download_mod_response(&release.download_url)
+            .await?;
+        stream_download(resp).await?
     } else {
         warn!("  ↳ mod 没有发布版本，跳过");
         return Ok(());
@@ -1520,10 +1547,14 @@ pub async fn run_translation_pipeline(
         mods.into_iter().take(limit).collect()
     };
 
+    let pb = crate::progress::new_bar();
+    pb.set_length(updated_mods.len() as u64);
+
     let is_auto = mod_names.is_none();
     let mut processed = 0;
     let mut failed = Vec::new();
     for mod_entry in &updated_mods {
+        pb.set_message(format!("处理: {}", mod_entry.name));
         if is_auto
             && let Some(limit) = limit
             && processed >= limit
@@ -1559,10 +1590,16 @@ pub async fn run_translation_pipeline(
         )
         .await
         {
-            Ok(()) => processed += 1,
+            Ok(()) => {
+                processed += 1;
+                pb.set_message(format!("✓ {}", mod_entry.name));
+                pb.inc(1);
+            }
             Err(e) => {
                 error!("处理 mod {} 失败: {:?}", mod_entry.name, e);
                 failed.push(mod_entry.name.clone());
+                pb.set_message(format!("✗ {}", mod_entry.name));
+                pb.inc(1);
                 // 继续处理下一个
             }
         }

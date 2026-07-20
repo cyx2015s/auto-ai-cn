@@ -67,6 +67,9 @@ pub fn pack_all_to_one_mod(
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
 
+    let pb = crate::progress::new_bar();
+    pb.set_length(cache_files.len() as u64);
+
     let mut packed_count = 0;
 
     for cache_path in &cache_files {
@@ -135,6 +138,8 @@ pub fn pack_all_to_one_mod(
         zip_writer.start_file(&zip_path, options)?;
         zip_writer.write_all(ini_str.as_bytes())?;
         packed_count += 1;
+        pb.set_message(format!("打包: {}", mod_name));
+        pb.inc(1);
     }
 
     // toggle.py， 官网不允许传带可执行文件的 mod 包，作此变通
