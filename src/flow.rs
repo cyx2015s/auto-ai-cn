@@ -882,6 +882,10 @@ pub async fn call_llm_for_translation(
                                                 "整文件翻译中没有检测到中文字符: file={}, entries={:?}",
                                                 submitted.file_name, submitted.ini_content
                                             );
+                                            warn!(
+                                                "额外参数情况：{:?}, {:?}",
+                                                submitted.section, submitted.entries
+                                            );
                                             messages.push(MessageRequest::Tool(ToolMessageRequest::new(
                                                 &format!(
                                                     "警告：整文件翻译中没有检测到中文字符，请检查翻译内容是否正确: {} (已收到 {} 条)",
@@ -976,9 +980,6 @@ pub async fn call_llm_for_translation(
                                 &tool_call.function.arguments,
                             ) {
                                 Ok(entry) => {
-                                    glossary
-                                        .with_section(Some("ai-glossary"))
-                                        .set(&entry.term, &entry.translation);
                                     debug!(
                                         "AI 提交术语: {} → {} ({})",
                                         entry.term,
@@ -986,13 +987,36 @@ pub async fn call_llm_for_translation(
                                         entry.reason.as_deref().unwrap_or("无理由")
                                     );
                                     has_valid_call = true;
-                                    messages.push(MessageRequest::Tool(ToolMessageRequest::new(
-                                        &format!(
-                                            "术语已记录: {} → {}",
-                                            entry.term, entry.translation
-                                        ),
-                                        &tool_call.id,
-                                    )));
+                                    if let Some(old) =
+                                        glossary.with_section(Some("ai-glossary")).get(&entry.term)
+                                    {
+                                        warn!(
+                                            "[术语覆盖] AI 提交术语覆盖已有翻译: {} → {} (原翻译: {})",
+                                            entry.term, entry.translation, old
+                                        );
+                                        messages.push(MessageRequest::Tool(
+                                            ToolMessageRequest::new(
+                                                &format!(
+                                                    "禁止覆盖术语 {}：原 {} → 新 {}。已人工记录覆盖请求，会之后处理。",
+                                                    entry.term, old, entry.translation
+                                                ),
+                                                &tool_call.id,
+                                            ),
+                                        ));
+                                    } else {
+                                        glossary
+                                            .with_section(Some("ai-glossary"))
+                                            .set(&entry.term, &entry.translation);
+                                        messages.push(MessageRequest::Tool(
+                                            ToolMessageRequest::new(
+                                                &format!(
+                                                    "术语已记录: {} → {}",
+                                                    entry.term, entry.translation
+                                                ),
+                                                &tool_call.id,
+                                            ),
+                                        ));
+                                    }
                                 }
                                 Err(e) => {
                                     warn!("解析术语数据失败: {}", e);
