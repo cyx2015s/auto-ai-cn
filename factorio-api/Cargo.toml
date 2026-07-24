@@ -7,6 +7,8 @@ edition = "2024"
 anyhow = "1.0.102"
 chrono = "0.4.45"
 dotenvy = "0.15.7"
+log = "0.4.33"
+futures-util = "0.3.33"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "form", "query", "multipart", "rustls" ] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"

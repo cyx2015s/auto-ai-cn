@@ -1524,16 +1524,12 @@ pub async fn run_translation_pipeline(
             return Ok(());
         }
         let name_strs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-        let resp = fa_client
+        let results = fa_client
             .mods_by_names(&name_strs)
             .await
             .context("获取指定 mod 信息失败")?;
-        info!(
-            "手动指定 {} 个 mod，找到 {} 个",
-            names.len(),
-            resp.results.len()
-        );
-        resp.results
+        info!("手动指定 {} 个 mod，找到 {} 个", names.len(), results.len());
+        results
     } else {
         // 自动获取更新的 mod
         let page_size = limit.map(|l| l.min(100) as u64);

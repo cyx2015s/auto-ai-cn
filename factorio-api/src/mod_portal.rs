@@ -31,40 +31,6 @@ pub struct FactorioWebClient {
 // API 类型定义 — 全部按 Factorio Wiki / Mod_portal_API 的规格编写
 // ============================================================================
 
-/// 分页信息
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct Pagination {
-    /// 模组总数
-    pub count: u64,
-    /// 当前页码（1-based）
-    pub page: u64,
-    /// 总页数
-    pub page_count: u64,
-    /// 每页模组数
-    pub page_size: u64,
-    /// 关联页面的链接
-    pub links: PageLinks,
-}
-
-/// 分页链接 — 字段值为 `null` 时表示不存在对应页面
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct PageLinks {
-    pub first: Option<String>,
-    pub last: Option<String>,
-    pub next: Option<String>,
-    pub prev: Option<String>,
-}
-
-/// 模组列表响应（`/api/mods` 及 `/api/search` 的返回值）
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct ModListResponse {
-    pub pagination: Pagination,
-    pub results: Vec<ResultEntry>,
-}
-
-/// 搜索结果响应 — 结构同 ModListResponse
-pub type SearchResponse = ModListResponse;
-
 /// 单个模组的条目。
 ///
 /// 根据端点的不同，某些字段可能为 `None`：
@@ -220,6 +186,151 @@ pub struct ErrorResponse {
 }
 
 // ============================================================================
+// /api/search 端点专用类型
+// ============================================================================
+
+/// 搜索分页信息（无 links 字段，与 `/api/mods` 的 Pagination 不同）
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct SearchPagination {
+    /// 模组总数
+    pub count: u64,
+    /// 当前页码（1-based）
+    pub page: u64,
+    /// 总页数
+    pub page_count: u64,
+    /// 每页模组数
+    pub page_size: u64,
+}
+
+/// 搜索结果高亮字段
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct HighlightedFields {
+    pub name: String,
+    pub owner: String,
+    pub summary: String,
+    pub title: String,
+}
+
+/// `/api/search` 返回的单条结果。
+///
+/// **注意**：`latest_release` 为十六进制哈希字符串，
+/// 不同于 `ResultEntry.latest_release`（完整的 `Release` 对象）。
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct SearchResultEntry {
+    pub name: String,
+    pub title: String,
+    pub owner: String,
+    pub summary: String,
+    pub downloads_count: u64,
+
+    /// 最新发布版本的十六进制哈希值，可用于拼接下载 URL
+    #[serde(default)]
+    pub latest_release: Option<String>,
+
+    /// 最新发布版本号（如 `"0.5.2"`）
+    #[serde(default)]
+    pub latest_release_version: Option<String>,
+
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+    #[serde(default)]
+    pub deprecated: Option<bool>,
+    #[serde(default)]
+    pub source_url: Option<String>,
+    #[serde(default)]
+    pub requires_space_age: Option<bool>,
+    #[serde(default)]
+    pub thumbnail: Option<String>,
+
+    /// 高亮字段（搜索词匹配部分）
+    #[serde(default)]
+    pub highlighted_fields: Option<HighlightedFields>,
+
+    /// 兼容的 Factorio 版本列表
+    #[serde(default)]
+    pub factorio_versions: Option<Vec<String>>,
+
+    /// 标签
+    #[serde(default, deserialize_with = "deserialize_optional_one_or_many")]
+    pub tags: Option<Vec<Tag>>,
+}
+
+impl SearchResultEntry {
+    /// 将搜索结果条目转换为 `ResultEntry`。
+    ///
+    /// 从哈希字符串构造合成的 `Release` 对象（下载 URL = `/download/{name}/{hash}`）。
+    /// 其余未在搜索响应中出现的字段置为 `None`。
+    /// 如需完整信息（changelog、description、license 等），应随后调用 `get_mod()`。
+    pub fn into_result_entry(self) -> ResultEntry {
+        let synthetic_release = self.latest_release.as_ref().map(|hash| Release {
+            download_url: format!("/download/{}/{}", self.name, hash),
+            file_name: String::new(),
+            info_json: InfoJson {
+                factorio_version: String::new(),
+                dependencies: None,
+            },
+            released_at: String::new(),
+            version: self.latest_release_version.clone().unwrap_or_default(),
+            sha1: String::new(),
+            feature_flags: None,
+        });
+
+        ResultEntry {
+            name: self.name,
+            title: self.title,
+            owner: self.owner,
+            summary: self.summary,
+            downloads_count: self.downloads_count,
+            latest_release: synthetic_release,
+            releases: None,
+            category: self.category,
+            changelog: None,
+            created_at: self.created_at,
+            description: None,
+            deprecated: self.deprecated,
+            deprecated_reason: None,
+            source_url: self.source_url,
+            github_path: None,
+            homepage: None,
+            tags: self.tags,
+            license: None,
+            updated_at: self.updated_at,
+            last_highlighted_at: None,
+            thumbnail: self.thumbnail,
+        }
+    }
+
+    /// 拼接缩略图的完整 URL
+    pub fn thumbnail_url(&self) -> Option<String> {
+        self.thumbnail
+            .as_ref()
+            .map(|t| format!("{THUMBNAIL_BASE}{t}"))
+    }
+}
+
+/// `/api/search` 完整响应体
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct SearchResponse {
+    /// 各分类命中数
+    #[serde(default)]
+    pub category_hits: Option<serde_json::Value>,
+    /// 扩展包命中数
+    #[serde(default)]
+    pub expansion_hits: Option<serde_json::Value>,
+    /// 标签命中数
+    #[serde(default)]
+    pub tag_hits: Option<serde_json::Value>,
+    /// 分页信息
+    pub pagination: SearchPagination,
+    /// 搜索结果列表
+    pub results: Vec<SearchResultEntry>,
+}
+
+// ============================================================================
 // 辅助函数
 // ============================================================================
 
@@ -228,8 +339,8 @@ fn parse_iso8601(s: Option<&str>) -> Option<DateTime<Utc>> {
     s.and_then(|s| {
         // chrono 的 DateTime::parse_from_rfc3339 比较严格，
         // 但 Factorio 返回的格式有多种变体，用宽松解析
-        DateTime::parse_from_rfc3339(s)
-            .ok()
+        dbg!(DateTime::parse_from_rfc3339(s)
+            .ok())
             .map(|dt| dt.with_timezone(&Utc))
             .or_else(|| {
                 // 回退：尝试 naive datetime + 假定 UTC
@@ -240,10 +351,6 @@ fn parse_iso8601(s: Option<&str>) -> Option<DateTime<Utc>> {
             })
     })
 }
-
-// ============================================================================
-// 辅助反序列化 — API 对单元素数组有时返回裸对象而非 `[{...}]`
-// ============================================================================
 
 /// 反序列化：接受 JSON null → `None`，单对象 → `Some(vec![obj])`，数组 → `Some(vec)`
 fn deserialize_optional_one_or_many<'de, D, T>(deserializer: D) -> Result<Option<Vec<T>>, D::Error>
@@ -269,128 +376,42 @@ where
 }
 
 // ============================================================================
-// 查询参数辅助类型
+// 查询参数类型
 // ============================================================================
 
-/// 每页大小 — 整数或 `"max"`
-#[derive(Debug, Clone)]
-pub enum PageSize {
-    Size(u64),
-    Max,
-}
-
-impl std::fmt::Display for PageSize {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PageSize::Size(n) => write!(f, "{n}"),
-            PageSize::Max => write!(f, "max"),
-        }
-    }
-}
-
-/// 排序字段
-#[derive(Debug, Clone)]
-pub enum SortBy {
-    Name,
-    CreatedAt,
-    UpdatedAt,
-}
-
-impl AsRef<str> for SortBy {
-    fn as_ref(&self) -> &str {
-        match self {
-            SortBy::Name => "name",
-            SortBy::CreatedAt => "created_at",
-            SortBy::UpdatedAt => "updated_at",
-        }
-    }
-}
-
-/// 排序方向
-#[derive(Debug, Clone)]
-pub enum SortOrder {
-    Asc,
-    Desc,
-}
-
-impl AsRef<str> for SortOrder {
-    fn as_ref(&self) -> &str {
-        match self {
-            SortOrder::Asc => "asc",
-            SortOrder::Desc => "desc",
-        }
-    }
-}
-
-/// `/api/mods` 列表查询参数
-#[derive(Debug, Clone, Default)]
-pub struct ModsQuery {
-    /// 是否隐藏不兼容的模组。默认 `true`
-    pub hide_deprecated: Option<bool>,
-    /// 页码（1-based），`page_size = "max"` 时忽略
-    pub page: Option<u64>,
-    /// 每页大小；默认 25
-    pub page_size: Option<PageSize>,
-    /// 排序字段；默认 `name`
-    pub sort: Option<SortBy>,
-    /// 排序方向；默认 `desc`
-    pub sort_order: Option<SortOrder>,
-    /// 按模组名称过滤
-    pub namelist: Option<Vec<String>>,
-    /// Factorio 游戏版本号（如 `"2.0.76"`）
-    pub version: Option<String>,
-}
-
-impl ModsQuery {
-    /// 将查询参数挂载到 RequestBuilder 上
-    fn apply(&self, mut req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        if let Some(v) = self.hide_deprecated {
-            let s = v.to_string();
-            req = req.query(&[("hide_deprecated", s.as_str())]);
-        }
-        if let Some(v) = self.page {
-            let s = v.to_string();
-            req = req.query(&[("page", s.as_str())]);
-        }
-        if let Some(ref v) = self.page_size {
-            let s = v.to_string();
-            req = req.query(&[("page_size", s.as_str())]);
-        }
-        if let Some(ref v) = self.sort {
-            req = req.query(&[("sort", v.as_ref())]);
-        }
-        if let Some(ref v) = self.sort_order {
-            req = req.query(&[("sort_order", v.as_ref())]);
-        }
-        if let Some(ref v) = self.namelist {
-            for name in v {
-                req = req.query(&[("namelist", name.as_str())]);
-            }
-        }
-        if let Some(ref v) = self.version {
-            req = req.query(&[("version", v.as_str())]);
-        }
-        req
-    }
-}
-
 /// 搜索请求体（`POST /api/search`）
-#[derive(Debug, Clone, serde::Serialize)]
+///
+/// `username` 和 `token` 由 `search_mods` 方法从 `self.config` 自动注入，
+/// 调用方无需设置。
+#[derive(Debug, Clone, serde::Serialize, Default)]
 pub struct SearchQuery {
     /// Factorio 游戏版本号（必填）
-    pub version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     /// 搜索关键词（可选）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
-    /// 排序方式
+    /// 排序字段（如 `"last_updated_at"`、`"created_at"`、`"name"`、`"downloads_count"`）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort_attribute: Option<String>,
+    /// 排序方向：`"asc"` 或 `"desc"`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub order: Option<String>,
-    /// 页码
+    /// 页码（1-based）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub page: Option<u64>,
     /// 每页大小
     #[serde(skip_serializing_if = "Option::is_none")]
     pub page_size: Option<u64>,
+}
+
+/// 内部使用的搜索请求体 —— 包含认证信息（由 `search_mods` 自动注入）
+#[derive(Debug, Clone, serde::Serialize)]
+struct SearchRequestBody<'a> {
+    #[serde(flatten)]
+    query: &'a SearchQuery,
+    username: &'a str,
+    token: &'a str,
 }
 
 // ============================================================================
@@ -457,48 +478,6 @@ impl FactorioWebClient {
 
 impl FactorioWebClient {
     // ------------------------------------------------------------------
-    // GET /api/mods — 获取模组列表
-    // ------------------------------------------------------------------
-
-    /// 获取模组列表。
-    ///
-    /// 可通过 `ModsQuery` 控制分页、排序、过滤、版本。
-    pub async fn list_mods(&self, query: Option<&ModsQuery>) -> anyhow::Result<ModListResponse> {
-        let default_query = ModsQuery::default();
-        let q = query.unwrap_or(&default_query);
-        let req = self.client.get(format!("{MOD_API_BASE}/mods"));
-        let resp = q.apply(req).send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            if let Ok(err) = serde_json::from_str::<ErrorResponse>(&text) {
-                return Err(anyhow::anyhow!("API 错误 ({}): {}", status, err.message));
-            }
-            return Err(anyhow::anyhow!("API 错误 ({}): {}", status, text));
-        }
-        let body: ModListResponse = resp.json().await?;
-        Ok(body)
-    }
-
-    /// 获取所有模组（通过 `page_size = "max"`）
-    pub async fn all_mods(&self) -> anyhow::Result<ModListResponse> {
-        let query = ModsQuery {
-            page_size: Some(PageSize::Max),
-            ..Default::default()
-        };
-        self.list_mods(Some(&query)).await
-    }
-
-    /// 按名称精确查找模组列表
-    pub async fn mods_by_names(&self, names: &[&str]) -> anyhow::Result<ModListResponse> {
-        let query = ModsQuery {
-            namelist: Some(names.iter().map(|s| s.to_string()).collect()),
-            ..Default::default()
-        };
-        self.list_mods(Some(&query)).await
-    }
-
-    // ------------------------------------------------------------------
     // GET /api/mods/{name} — 获取模组简短信息
     // ------------------------------------------------------------------
 
@@ -542,13 +521,17 @@ impl FactorioWebClient {
     // POST /api/search — 搜索模组
     // ------------------------------------------------------------------
 
-    /// 搜索模组。
+    /// 搜索模组（`POST /api/search`）。
     ///
-    /// 必填参数：`version`（如 `"2.0.76"`）。
-    /// 可选参数：`query`（搜索关键词）、`order`、`page`、`page_size`。
+    /// `username` 和 `token` 由 `self.config` 自动注入，调用方无需在 `SearchQuery` 中设置。
     pub async fn search_mods(&self, search: &SearchQuery) -> anyhow::Result<SearchResponse> {
         let url = format!("{MOD_API_BASE}/search");
-        let resp = self.client.post(&url).json(search).send().await?;
+        let body = SearchRequestBody {
+            query: search,
+            username: &self.config.user,
+            token: &self.config.token,
+        };
+        let resp = self.client.post(&url).json(&body).send().await?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -558,6 +541,7 @@ impl FactorioWebClient {
             return Err(anyhow::anyhow!("API 错误 ({}): {}", status, text));
         }
         let body: SearchResponse = resp.json().await?;
+        dbg!(&body.results[0..2]);
         Ok(body)
     }
 
@@ -705,61 +689,97 @@ impl FactorioWebClient {
     }
 
     // ------------------------------------------------------------------
-    // 高级组合方法 — 基于底层 API 的多步编排
+    // 高级组合方法 — 基于 /api/search 的多步编排
     // ------------------------------------------------------------------
+
+    /// 按名称列表获取模组信息。
+    ///
+    /// 并发调用 `get_mod()`，每个名称独立查询，返回精确匹配结果。
+    /// 查询失败的模组会被静默跳过（只记录警告日志）。
+    pub async fn mods_by_names(&self, names: &[&str]) -> anyhow::Result<Vec<ResultEntry>> {
+        use futures_util::StreamExt;
+        use futures_util::stream::FuturesUnordered;
+
+        let futures: FuturesUnordered<_> = names
+            .iter()
+            .map(|name| async move {
+                let result = self.get_mod(name).await;
+                (name, result)
+            })
+            .collect();
+
+        let mut results = Vec::with_capacity(names.len());
+        let mut stream = futures;
+        while let Some((name, result)) = stream.next().await {
+            match result {
+                Ok(entry) => results.push(entry),
+                Err(e) => {
+                    log::warn!("获取模组 {} 信息失败: {}", name, e);
+                }
+            }
+        }
+
+        Ok(results)
+    }
 
     /// 获取最近更新的前 `limit` 个模组。
     ///
-    /// 通过 `sort=updated_at&sort_order=desc` 实现，服务端排序。
-    /// `version` 为 Factorio 版本号（如 `"2.0.76"`），用于过滤不兼容的模组。
+    /// 使用 `/api/search` 端点，按 `last_updated_at` 降序排列。
     pub async fn get_recently_updated(
         &self,
         limit: u64,
         version: &str,
     ) -> anyhow::Result<Vec<ResultEntry>> {
-        let query = ModsQuery {
-            page_size: Some(PageSize::Size(limit)),
-            sort: Some(SortBy::UpdatedAt),
-            sort_order: Some(SortOrder::Desc),
-            hide_deprecated: Some(true),
+        let query = SearchQuery {
             version: Some(version.to_string()),
-            ..Default::default()
+            sort_attribute: Some("last_updated_at".to_string()),
+            order: Some("desc".to_string()),
+            page_size: Some(limit),
+            page: Some(1),
+            query: None,
         };
-        let resp = self.list_mods(Some(&query)).await?;
-        Ok(resp.results)
+        let resp = self.search_mods(&query).await?;
+        let entries: Vec<ResultEntry> = resp
+            .results
+            .into_iter()
+            .map(|sr| sr.into_result_entry())
+            .collect();
+        Ok(entries)
     }
 
     /// 获取最新创建的前 `limit` 个模组。
     ///
-    /// 通过 `sort=created_at&sort_order=desc` 实现。
+    /// 使用 `/api/search` 端点，按 `created_at` 降序排列。
     pub async fn get_newest_mods(
         &self,
         limit: u64,
         version: &str,
     ) -> anyhow::Result<Vec<ResultEntry>> {
-        let query = ModsQuery {
-            page_size: Some(PageSize::Size(limit)),
-            sort: Some(SortBy::CreatedAt),
-            sort_order: Some(SortOrder::Desc),
-            hide_deprecated: Some(true),
+        let query = SearchQuery {
             version: Some(version.to_string()),
-            ..Default::default()
+            sort_attribute: Some("created_at".to_string()),
+            order: Some("desc".to_string()),
+            page_size: Some(limit),
+            page: Some(1),
+            query: None,
         };
-        let resp = self.list_mods(Some(&query)).await?;
-        Ok(resp.results)
+        let resp = self.search_mods(&query).await?;
+        let entries: Vec<ResultEntry> = resp
+            .results
+            .into_iter()
+            .map(|sr| sr.into_result_entry())
+            .collect();
+        Ok(entries)
     }
 
-    /// 获取在指定时间之后更新的所有模组（尽力而为）。
+    /// 获取在指定时间之后更新的所有模组。
     ///
-    /// 策略：按 `updated_at` 降序分页遍历，用 `latest_release.released_at` 做
-    /// 客户端过滤。当一整页条目都不满足时间条件时提前终止（因为降序排列）。
+    /// 策略：使用 `/api/search` 按 `last_updated_at` 降序分页遍历，
+    /// 用 `updated_at` 做客户端过滤。
+    /// 当一整页条目都不满足时间条件时提前终止（因为降序排列）。
     ///
-    /// **注意**：列表端点不返回 `updated_at` 字段，这里使用
-    /// `latest_release.released_at` 作为近似判断依据。如果某个模组的最新发布版
-    /// 是在 `since` 之前但其 `updated_at` 在 `since` 之后（如仅更新了描述），
-    /// 此方法会漏掉它。需要精确结果请对结果逐个调用 `get_mod_full`。
-    ///
-    /// `page_size` 控制每页获取数量（默认 100）。
+    /// `page_size` 控制每页获取数量（默认 100，上限 100）。
+    /// `max_size` 限制返回的模组总数（None = 不限制）。
     pub async fn get_mods_updated_since(
         &self,
         since: DateTime<Utc>,
@@ -772,30 +792,32 @@ impl FactorioWebClient {
         let mut page: u64 = 1;
 
         loop {
-            let query = ModsQuery {
-                page_size: Some(PageSize::Size(ps)),
-                page: Some(page),
-                sort: Some(SortBy::UpdatedAt),
-                sort_order: Some(SortOrder::Desc),
-                hide_deprecated: Some(true),
+            let query = SearchQuery {
                 version: Some(version.to_string()),
-                ..Default::default()
+                sort_attribute: Some("last_updated_at".to_string()),
+                order: Some("desc".to_string()),
+                page_size: Some(ps),
+                page: Some(page),
+                query: None,
             };
-            let resp = self.list_mods(Some(&query)).await?;
+            let resp = self.search_mods(&query).await?;
             let results = resp.results;
 
             if results.is_empty() {
                 break;
             }
 
-            // 客户端过滤 + 提前终止判断
             let mut page_has_match = false;
             for entry in results {
-                let released_after = entry.released_at_dt().is_some_and(|dt| dt >= since);
+                dbg!(&entry.updated_at);
+                dbg!(parse_iso8601(entry.updated_at.as_deref()));
+                dbg!(&since);
+                let updated_after =
+                    parse_iso8601(entry.updated_at.as_deref()).is_some_and(|dt| dt >= since);
 
-                if released_after {
+                if updated_after {
                     page_has_match = true;
-                    all_results.push(entry);
+                    all_results.push(entry.into_result_entry());
                 }
 
                 if all_results.len() as u64 >= max_size.unwrap_or(u64::MAX) {
@@ -803,13 +825,12 @@ impl FactorioWebClient {
                 }
             }
 
-            // 降序排列，如果整页没有匹配项，后续页也不会有了
+            // 降序排列，整页无匹配则后续页也不可能匹配
             if !page_has_match {
                 break;
             }
 
-            // 如果返回的条目数少于 page_size，说明已是最后一页
-            if (resp.pagination.page) >= resp.pagination.page_count {
+            if resp.pagination.page >= resp.pagination.page_count {
                 break;
             }
 
@@ -821,7 +842,10 @@ impl FactorioWebClient {
 
     /// 从已有条目列表中过滤出 `latest_release.released_at >= since` 的模组。
     ///
-    /// 可用于对 `all_mods()` 或任意列表结果做二次过滤。
+    /// **注意**：仅适用于从 `get_mod()` / `get_mod_full()` 获取的完整条目
+    /// （其 `latest_release` 包含真实的 `released_at`）。
+    /// 对于从 `get_mods_updated_since()` 返回的条目（其 `latest_release` 为合成对象），
+    /// `released_at_dt()` 会返回 `None`，应改用 `updated_at_dt()`。
     pub fn filter_updated_since(
         entries: &[ResultEntry],
         since: DateTime<Utc>,
@@ -834,15 +858,14 @@ impl FactorioWebClient {
 
     /// 按名称搜索并过滤出在指定时间之后更新的模组。
     ///
-    /// 先用 `mods_by_names` 批量获取，再客户端按时间过滤。
+    /// 先并发调用 `get_mod()` 获取完整信息（含 `releases`），再客户端按时间过滤。
     pub async fn find_updated_since_by_names(
         &self,
         names: &[&str],
         since: DateTime<Utc>,
     ) -> anyhow::Result<Vec<ResultEntry>> {
-        let resp = self.mods_by_names(names).await?;
-        let filtered: Vec<ResultEntry> = resp
-            .results
+        let entries = self.mods_by_names(names).await?;
+        let filtered: Vec<ResultEntry> = entries
             .into_iter()
             .filter(|e| e.released_at_dt().is_some_and(|dt| dt >= since))
             .collect();
@@ -945,6 +968,12 @@ mod tests {
         (username, password)
     }
 
+    #[test]
+    fn test_time_parsing() {
+        let s1 = Some("2026-07-23T23:31:36.025000");
+        dbg!(parse_iso8601(s1));
+    }
+
     #[tokio::test]
     async fn test_login() {
         let (username, password) = get_credentials();
@@ -961,26 +990,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_mods() -> anyhow::Result<()> {
+    async fn test_search_mods() -> anyhow::Result<()> {
         let (username, password) = get_credentials();
         let client = FactorioWebClient::login(username, password).await?;
 
-        let query = ModsQuery {
-            page_size: Some(PageSize::Size(3)),
-            page: Some(1),
-            hide_deprecated: Some(true),
+        let query = SearchQuery {
             version: Some("2.1".to_string()),
-            ..Default::default()
+            page_size: Some(5),
+            page: Some(1),
+            sort_attribute: Some("last_updated_at".to_string()),
+            order: Some("desc".to_string()),
+            query: None,
         };
-        let resp = client.list_mods(Some(&query)).await?;
+        let resp = client.search_mods(&query).await?;
         println!(
             "总数: {}, 当前页大小: {}",
             resp.pagination.count, resp.pagination.page_size
         );
         for m in &resp.results {
             println!(
-                "  - {} by {} (downloads: {})",
-                m.name, m.owner, m.downloads_count
+                "  - {} by {} (downloads: {}, category: {:?}, latest_release: {:?})",
+                m.name, m.owner, m.downloads_count, m.category, m.latest_release
             );
         }
         Ok(())
@@ -1026,7 +1056,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mods_since() -> anyhow::Result<()> {
+    async fn test_mods_updated_since() -> anyhow::Result<()> {
         let (username, password) = get_credentials();
         let client = FactorioWebClient::login(username, password).await?;
 
@@ -1039,7 +1069,25 @@ mod tests {
             .await?;
         println!("{} 之后更新的模组:", since);
         for m in mods {
-            println!("  - {} (latest release: {:?})", m.name, m.latest_release);
+            println!("  - {} (updated: {:?})", m.name, m.updated_at);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_mods_by_names() -> anyhow::Result<()> {
+        let (username, password) = get_credentials();
+        let client = FactorioWebClient::login(username, password).await?;
+
+        let results = client.mods_by_names(&["rso-mod", "flib"]).await?;
+        println!("找到 {} 个模组:", results.len());
+        for m in &results {
+            println!(
+                "  - {} by {} (releases: {:?})",
+                m.name,
+                m.owner,
+                m.releases.as_ref().map(|r| r.len())
+            );
         }
         Ok(())
     }
