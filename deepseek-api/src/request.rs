@@ -4,6 +4,7 @@ use schemars::schema::SchemaObject;
 use serde::{Deserialize, Serialize};
 
 /// Represents a frequency penalty with a value between -2 and 2.
+#[deprecated(since = "0.1.2", note = "frequency_penalty has been deprecated by the DeepSeek API and no longer has any effect")]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FrequencyPenalty(pub f32);
 
@@ -35,6 +36,7 @@ impl Default for FrequencyPenalty {
 }
 
 /// Represents a presence penalty with a value between -2 and 2.
+#[deprecated(since = "0.1.2", note = "presence_penalty has been deprecated by the DeepSeek API and no longer has any effect")]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PresencePenalty(pub f32);
 
@@ -92,7 +94,7 @@ impl ResponseFormat {
     }
 }
 
-/// Represents the maximum number of tokens with a value between 1 and 8192.
+/// Represents the maximum number of tokens with a value between 1 and 384000.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MaxToken(pub u32);
 
@@ -105,10 +107,10 @@ impl MaxToken {
     ///
     /// # Errors
     ///
-    /// Returns an error if the value is not between 1 and 8192.
+    /// Returns an error if the value is not between 1 and 384000.
     pub fn new(v: u32) -> Result<Self> {
-        if !(1..=8192).contains(&v) {
-            return Err(anyhow!("Max token must be between 1 and 8192.".to_string()));
+        if !(1..=384000).contains(&v) {
+            return Err(anyhow!("Max token must be between 1 and 384000.".to_string()));
         }
         Ok(MaxToken(v))
     }
@@ -142,6 +144,41 @@ impl StreamOptions {
     /// * `include_usage` - A boolean indicating whether to include usage information.
     pub fn new(include_usage: bool) -> Self {
         StreamOptions { include_usage }
+    }
+}
+
+/// Represents the thinking mode configuration.
+///
+/// Controls whether the model uses thinking (reasoning) mode and the reasoning effort level.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Thinking {
+    /// Whether thinking mode is enabled. `"enabled"` or `"disabled"`.
+    #[serde(rename = "type")]
+    pub thinking_type: String,
+    /// Reasoning effort level: `"high"` (default) or `"max"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+}
+
+impl Thinking {
+    /// Create a new `Thinking` with thinking enabled and optional reasoning effort.
+    ///
+    /// # Arguments
+    ///
+    /// * `effort` - `None` for default ("high"), or `Some("max")` for maximum reasoning.
+    pub fn enabled(effort: Option<&str>) -> Self {
+        Thinking {
+            thinking_type: "enabled".to_string(),
+            reasoning_effort: effort.map(|s| s.to_string()),
+        }
+    }
+
+    /// Create a new `Thinking` with thinking disabled.
+    pub fn disabled() -> Self {
+        Thinking {
+            thinking_type: "disabled".to_string(),
+            reasoning_effort: None,
+        }
     }
 }
 
@@ -190,7 +227,7 @@ impl TopP {
     /// Returns an error if the value is not between 0.0 and 1.0.
     pub fn new(v: f32) -> Result<Self> {
         if !(0.0..=1.0).contains(&v) {
-            return Err(anyhow!("TopP value must be between 0and 2.".to_string()));
+            return Err(anyhow!("TopP value must be between 0.0 and 1.0.".to_string()));
         }
         Ok(TopP(v))
     }

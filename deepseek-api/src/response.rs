@@ -19,14 +19,16 @@ pub enum ModelType {
 impl ModelType {
     /// Retrieves the limit information for the model.
     ///
+    /// # Returns
+    ///
     /// Returns a tuple containing:
-    /// - `context_len`: Maximum context length unit KB.
-    /// - `thought_chain_len`: Optional maximum thought chain length.
-    /// - `output_len`: Maximum output length.
+    /// - `context_len`: Maximum context length (unit: K tokens).
+    /// - `thought_chain_len`: Optional maximum thought chain length (not applicable to current models).
+    /// - `output_len`: Maximum output length (unit: K tokens).
     pub fn get_limit_info(&self) -> (u32, Option<u32>, u32) {
         match self {
-            ModelType::Flash => (64, None, 8),
-            ModelType::Pro => (64, Some(32), 8),
+            ModelType::Flash => (1024, None, 384),
+            ModelType::Pro => (1024, None, 384),
         }
     }
 }
@@ -37,20 +39,20 @@ impl fmt::Display for ModelType {
     /// The output includes context length, thought chain length (if applicable),
     /// output length, and pricing information.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (context_len, thought_chain_len, output_len) = self.get_limit_info();
+        let (context_len, _thought_chain_len, output_len) = self.get_limit_info();
         match self {
             ModelType::Flash => {
                 write!(
                     f,
-                    "DeepSeekChat: Context Length = {}K, Max Output Length = {}K",
+                    "DeepSeekV4Flash: Context Length = {}K, Max Output Length = {}K",
                     context_len, output_len
                 )
             }
             ModelType::Pro => {
                 write!(
                     f,
-                    "DeepSeekReasoner: Context Length = {}K, Max Thought Chain Length = {:?}K, Max Output Length = {}K",
-                    context_len, thought_chain_len, output_len
+                    "DeepSeekV4Pro: Context Length = {}K, Max Output Length = {}K",
+                    context_len, output_len
                 )
             }
         }

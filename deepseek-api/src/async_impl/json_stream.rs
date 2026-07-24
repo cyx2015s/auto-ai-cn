@@ -74,7 +74,7 @@ impl<T: DeserializeOwned + Send + 'static> JsonStream<T> {
             .map_err(Error::from)
             .take_while(|res| {
                 future::ready(match res {
-                    Ok(ref line) => line != "data: [DONE]",
+                    Ok(line) => line != "data: [DONE]",
                     Err(_) => true,
                 })
             })

@@ -4,7 +4,7 @@ use crate::{
     DeepSeekClient,
     request::{
         FrequencyPenalty, MaxToken, MessageRequest, PresencePenalty, ResponseFormat, ResponseType,
-        Stop, StreamOptions, Temperature, ToolChoice, ToolObject, TopLogprobs, TopP,
+        Stop, StreamOptions, Temperature, Thinking, ToolChoice, ToolObject, TopLogprobs, TopP,
     },
     response::{
         ChatCompletion, ChatCompletionStream, ChatResponse, JSONChoiceStream, ModelType,
@@ -48,13 +48,22 @@ pub struct CompletionsRequest<'a> {
     pub tools: Option<&'a [ToolObject]>,
     pub tool_choice: Option<ToolChoice>,
 
-    // ignore when model is deepseek-reasoner
+    // Thinking mode control (v4 models)
+    pub thinking: Option<Thinking>,
+    // End-user identifier for safety & KV cache isolation
+    pub user_id: Option<String>,
+
+    // Sampling parameters (not applicable to reasoning/thinking mode)
     pub temperature: Option<Temperature>,
     pub top_p: Option<TopP>,
-    pub presence_penalty: Option<PresencePenalty>,
-    pub frequency_penalty: Option<FrequencyPenalty>,
     pub logprobs: Option<bool>,
     pub top_logprobs: Option<TopLogprobs>,
+
+    // Deprecated — no longer serialized, kept for API compatibility
+    #[deprecated(since = "0.1.2", note = "frequency_penalty is deprecated by the DeepSeek API")]
+    pub presence_penalty: Option<PresencePenalty>,
+    #[deprecated(since = "0.1.2", note = "presence_penalty is deprecated by the DeepSeek API")]
+    pub frequency_penalty: Option<FrequencyPenalty>,
 }
 
 impl Serialize for CompletionsRequest<'_> {
@@ -62,7 +71,7 @@ impl Serialize for CompletionsRequest<'_> {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("CompletionsRequest", 12)?;
+        let mut state = serializer.serialize_struct("CompletionsRequest", 13)?;
 
         state.serialize_field("messages", &self.messages)?;
         state.serialize_field("model", &self.model)?;
@@ -87,19 +96,22 @@ impl Serialize for CompletionsRequest<'_> {
             state.serialize_field("tool_choice", tool_choice)?;
         }
 
-        // Skip these fields if model is DeepSeekReasoner
+        // Thinking (v4 models)
+        if let Some(thinking) = &self.thinking {
+            state.serialize_field("thinking", thinking)?;
+        }
+        // User ID
+        if let Some(user_id) = &self.user_id {
+            state.serialize_field("user_id", user_id)?;
+        }
+
+        // Sampling params — skip for reasoning/thinking mode (Pro model)
         if self.model != ModelType::Pro {
             if let Some(temperature) = &self.temperature {
                 state.serialize_field("temperature", temperature)?;
             }
             if let Some(top_p) = &self.top_p {
                 state.serialize_field("top_p", top_p)?;
-            }
-            if let Some(presence_penalty) = &self.presence_penalty {
-                state.serialize_field("presence_penalty", presence_penalty)?;
-            }
-            if let Some(frequency_penalty) = &self.frequency_penalty {
-                state.serialize_field("frequency_penalty", frequency_penalty)?;
             }
             if let Some(logprobs) = &self.logprobs {
                 state.serialize_field("logprobs", logprobs)?;
@@ -108,6 +120,9 @@ impl Serialize for CompletionsRequest<'_> {
                 state.serialize_field("top_logprobs", top_logprobs)?;
             }
         }
+
+        // frequency_penalty and presence_penalty are intentionally NOT serialized
+        // — they are deprecated by the DeepSeek API and have no effect.
 
         state.end()
     }
@@ -128,6 +143,8 @@ pub struct CompletionsRequestBuilder<'a> {
     stop: Option<Stop>,
     tools: Option<&'a [ToolObject]>,
     tool_choice: Option<ToolChoice>,
+    thinking: Option<Thinking>,
+    user_id: Option<String>,
     temperature: Option<Temperature>,
     top_p: Option<TopP>,
     presence_penalty: Option<PresencePenalty>,
@@ -189,6 +206,27 @@ impl<'a> CompletionsRequestBuilder<'a> {
         self
     }
 
+    /// Configure thinking (reasoning) mode.
+    ///
+    /// # Arguments
+    ///
+    /// * `enable` - `true` to enable thinking, `false` to disable.
+    /// * `effort` - `None` for default ("high"), or `Some("max")`.
+    pub fn thinking(mut self, enable: bool, effort: Option<&str>) -> Self {
+        self.thinking = Some(if enable {
+            Thinking::enabled(effort)
+        } else {
+            Thinking::disabled()
+        });
+        self
+    }
+
+    /// Set a custom user ID for content safety and KV cache isolation.
+    pub fn user_id(mut self, value: &str) -> Self {
+        self.user_id = Some(value.to_string());
+        self
+    }
+
     pub fn temperature(mut self, value: f32) -> Result<Self> {
         self.temperature = Some(Temperature::new(value)?);
         Ok(self)
@@ -199,13 +237,15 @@ impl<'a> CompletionsRequestBuilder<'a> {
         Ok(self)
     }
 
-    pub fn presence_penalty(mut self, value: f32) -> Result<Self> {
-        self.presence_penalty = Some(PresencePenalty::new(value)?);
+    #[deprecated(since = "0.1.2", note = "frequency_penalty is deprecated by the DeepSeek API and has no effect")]
+    pub fn frequency_penalty(mut self, value: f32) -> Result<Self> {
+        self.frequency_penalty = Some(FrequencyPenalty::new(value)?);
         Ok(self)
     }
 
-    pub fn frequency_penalty(mut self, value: f32) -> Result<Self> {
-        self.frequency_penalty = Some(FrequencyPenalty::new(value)?);
+    #[deprecated(since = "0.1.2", note = "presence_penalty is deprecated by the DeepSeek API and has no effect")]
+    pub fn presence_penalty(mut self, value: f32) -> Result<Self> {
+        self.presence_penalty = Some(PresencePenalty::new(value)?);
         Ok(self)
     }
 
@@ -234,6 +274,7 @@ impl<'a> RequestBuilder for CompletionsRequestBuilder<'a> {
     }
 
     fn build(self) -> CompletionsRequest<'a> {
+        #[allow(deprecated)]
         CompletionsRequest {
             messages: self.messages,
             model: self.model,
@@ -244,6 +285,8 @@ impl<'a> RequestBuilder for CompletionsRequestBuilder<'a> {
             stream_options: self.stream_options,
             tools: self.tools,
             tool_choice: self.tool_choice,
+            thinking: self.thinking,
+            user_id: self.user_id,
             temperature: self.temperature,
             top_p: self.top_p,
             presence_penalty: self.presence_penalty,
@@ -302,7 +345,7 @@ pub struct FMICompletionsRequestBuilder {
 impl FMICompletionsRequestBuilder {
     pub fn new(prompt: &str, suffix: &str) -> Self {
         Self {
-            //fim only support deepseek-chat model
+            //fim only support deepseek-v4-flash model
             model: ModelType::Flash,
             prompt: prompt.to_string(),
             suffix: suffix.to_string(),

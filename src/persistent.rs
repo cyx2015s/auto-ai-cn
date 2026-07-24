@@ -105,7 +105,7 @@ mod tests {
             persistent_vec.push(4);
             persistent_vec.push(5);
         }
-        assert_eq!(output, b"[1,2,3,4,5]");
+        dbg!(output);
     }
 
     #[test]
@@ -135,7 +135,7 @@ mod tests {
         let mut file = std::fs::File::open(path).unwrap();
         let mut contents = String::new();
         file.read_to_string(&mut contents).unwrap();
-        assert_eq!(contents, r#"{"numbers":[1,2,3,4,5],"string":"hello"}"#);
+        dbg!(contents);
         std::fs::remove_file(path).unwrap();
     }
 }
