@@ -334,22 +334,53 @@ pub struct SearchResponse {
 // 辅助函数
 // ============================================================================
 
-/// 解析 Factorio API 返回的 ISO 8601 / RFC 3339 时间字符串
+/// 解析 Factorio API 返回的 ISO 8601 / RFC 3339 时间字符串。
+///
+/// 兼容以下格式：
+/// - `"2026-07-24T14:30:14.755694300Z"` — /api/mods/{name} 返回（纳秒 + Z）
+/// - `"2026-07-23T23:31:36.025000"`    — /api/search 返回（微秒，无时区）
+/// - `"2026-07-24T14:30:14Z"`          — 无小数秒 + Z
+/// - `"2026-07-24T14:30:14"`           — 无小数秒，无时区
 fn parse_iso8601(s: Option<&str>) -> Option<DateTime<Utc>> {
-    s.and_then(|s| {
-        // chrono 的 DateTime::parse_from_rfc3339 比较严格，
-        // 但 Factorio 返回的格式有多种变体，用宽松解析
-        dbg!(DateTime::parse_from_rfc3339(s)
-            .ok())
-            .map(|dt| dt.with_timezone(&Utc))
-            .or_else(|| {
-                // 回退：尝试 naive datetime + 假定 UTC
-                chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.fZ")
-                    .ok()
-                    .or_else(|| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").ok())
-                    .map(|naive| DateTime::from_naive_utc_and_offset(naive, Utc))
-            })
-    })
+    let s = s?;
+
+    // 1. 尝试严格的 RFC 3339（处理带 Z 或时区偏移的字符串）
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&Utc));
+    }
+
+    // 2. 没有时区标记 → 追加 Z 后重试（假定 UTC）
+    if let Ok(dt) = DateTime::parse_from_rfc3339(&format!("{}Z", s)) {
+        return Some(dt.with_timezone(&Utc));
+    }
+
+    // 3. 最终回退：剥离 Z，手动构建带精确小数位数的格式串
+    let s_clean = s.strip_suffix('Z').unwrap_or(s);
+
+    // 3a. 带小数秒——根据实际位数动态构造 %Y-%m-%dT%H:%M:%S.%Nf
+    if let Some(dot_pos) = s_clean.find('.') {
+        let base = &s_clean[..dot_pos];
+        let frac = &s_clean[dot_pos + 1..];
+        let frac_digits: String = frac
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .take(9) // chrono 最高纳秒精度
+            .collect();
+        if !frac_digits.is_empty() {
+            let clean = format!("{}.{}", base, frac_digits);
+            let fmt = format!("%Y-%m-%dT%H:%M:%S.%{}f", frac_digits.len());
+            if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(&clean, &fmt) {
+                return Some(DateTime::from_naive_utc_and_offset(naive, Utc));
+            }
+        }
+    }
+
+    // 3b. 无小数秒
+    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s_clean, "%Y-%m-%dT%H:%M:%S") {
+        return Some(DateTime::from_naive_utc_and_offset(naive, Utc));
+    }
+
+    None
 }
 
 /// 反序列化：接受 JSON null → `None`，单对象 → `Some(vec![obj])`，数组 → `Some(vec)`
@@ -541,7 +572,6 @@ impl FactorioWebClient {
             return Err(anyhow::anyhow!("API 错误 ({}): {}", status, text));
         }
         let body: SearchResponse = resp.json().await?;
-        dbg!(&body.results[0..2]);
         Ok(body)
     }
 
@@ -809,9 +839,6 @@ impl FactorioWebClient {
 
             let mut page_has_match = false;
             for entry in results {
-                dbg!(&entry.updated_at);
-                dbg!(parse_iso8601(entry.updated_at.as_deref()));
-                dbg!(&since);
                 let updated_after =
                     parse_iso8601(entry.updated_at.as_deref()).is_some_and(|dt| dt >= since);
 
@@ -960,6 +987,7 @@ impl FactorioWebClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{Datelike, Timelike};
 
     fn get_credentials() -> (String, String) {
         dotenvy::dotenv().ok();
@@ -969,9 +997,69 @@ mod tests {
     }
 
     #[test]
-    fn test_time_parsing() {
-        let s1 = Some("2026-07-23T23:31:36.025000");
-        dbg!(parse_iso8601(s1));
+    fn test_time_parsing_microseconds_no_timezone() {
+        // /api/search 返回的格式: 微秒精度，无时区后缀
+        let result = parse_iso8601(Some("2026-07-23T23:31:36.025000"));
+        assert!(result.is_some(), "应能解析微秒精度无时区格式");
+        let dt = result.unwrap();
+        assert_eq!(dt.year(), 2026);
+        assert_eq!(dt.month(), 7);
+        assert_eq!(dt.day(), 23);
+        assert_eq!(dt.hour(), 23);
+        assert_eq!(dt.minute(), 31);
+        assert_eq!(dt.second(), 36);
+        assert_eq!(dt.nanosecond(), 25_000_000); // 0.025 秒 = 25,000,000 纳秒
+    }
+
+    #[test]
+    fn test_time_parsing_nanoseconds_with_z() {
+        // /api/mods/{name} 返回的格式: 纳秒精度，带 Z 后缀
+        let result = parse_iso8601(Some("2026-07-24T14:30:14.755694300Z"));
+        assert!(result.is_some(), "应能解析纳秒精度带 Z 格式");
+        let dt = result.unwrap();
+        assert_eq!(dt.year(), 2026);
+        assert_eq!(dt.month(), 7);
+        assert_eq!(dt.day(), 24);
+        assert_eq!(dt.hour(), 14);
+        assert_eq!(dt.minute(), 30);
+        assert_eq!(dt.second(), 14);
+        assert_eq!(dt.nanosecond(), 755_694_300);
+    }
+
+    #[test]
+    fn test_time_parsing_no_fractional_with_z() {
+        let result = parse_iso8601(Some("2026-07-24T14:30:14Z"));
+        assert!(result.is_some(), "应能解析无小数秒带 Z 格式");
+        let dt = result.unwrap();
+        assert_eq!(dt.year(), 2026);
+        assert_eq!(dt.hour(), 14);
+        assert_eq!(dt.nanosecond(), 0);
+    }
+
+    #[test]
+    fn test_time_parsing_no_fractional_no_timezone() {
+        let result = parse_iso8601(Some("2026-07-24T14:30:14"));
+        assert!(result.is_some(), "应能解析无小数秒无时区格式");
+        let dt = result.unwrap();
+        assert_eq!(dt.year(), 2026);
+        assert_eq!(dt.hour(), 14);
+        assert_eq!(dt.nanosecond(), 0);
+    }
+
+    #[test]
+    fn test_time_parsing_invalid() {
+        let result = parse_iso8601(Some("not a date"));
+        assert!(result.is_none(), "无效日期应返回 None");
+        let result = parse_iso8601(None);
+        assert!(result.is_none(), "None 应返回 None");
+    }
+
+    #[test]
+    fn test_both_formats_can_be_compared() {
+        // 两种格式解析后应能正确比较大小
+        let t1 = parse_iso8601(Some("2026-07-23T23:31:36.025000")).unwrap();
+        let t2 = parse_iso8601(Some("2026-07-24T14:30:14.755694300Z")).unwrap();
+        assert!(t1 < t2, "23 号的时间应早于 24 号");
     }
 
     #[tokio::test]
