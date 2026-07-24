@@ -417,16 +417,17 @@ dependencies = [
 [[package]]
 name = "deepseek-api"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b783ebb85d968e857a4949e4a5ab5cae0fb827fbf661d846c7c5d5242121cef2"
 dependencies = [
  "anyhow",
+ "bytes",
  "cfg-if",
  "futures-util",
+ "http",
  "reqwest 0.12.28",
  "schemars 0.8.22",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -660,6 +661,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07bbe89c50d7a535e539b8c17bc0b49bdb77747034daa8087407d655f3f7cc1d"
 dependencies = [
  "futures-core",
+ "futures-sink",
 ]
 
 [[package]]
@@ -1702,6 +1704,7 @@ dependencies = [
  "base64",
  "bytes",
  "encoding_rs",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2",
