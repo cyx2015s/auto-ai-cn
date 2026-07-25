@@ -1122,6 +1122,7 @@ async fn process_mod(
     system_prompt: &str,
     glossary: &mut ini::Ini,
     mod_name: &str,
+    download_url: &str,
 ) -> anyhow::Result<()> {
     info!("处理 mod: {}", mod_name);
 
@@ -1148,29 +1149,11 @@ async fn process_mod(
         None
     };
 
-    // 2. 获取 mod 信息
-    let mod_info = match client_fa.get_mod(mod_name).await {
-        Ok(m) => m,
-        Err(e) => {
-            error!("  ✗ 获取 mod 信息失败: {}", e);
-            return Err(e);
-        }
-    };
-
-    // 3. 下载 mod 并提取翻译文件（流式 + 进度条）
-    let release_dl = mod_info
-        .latest_release
-        .as_ref()
-        .or_else(|| mod_info.releases.as_ref().and_then(|r| r.last()));
-    let zip_data = if let Some(release) = release_dl {
-        let resp = client_fa
-            .download_mod_response(&release.download_url)
-            .await?;
-        stream_download(resp).await?
-    } else {
-        warn!("  ↳ mod 没有发布版本，跳过");
-        return Ok(());
-    };
+    // 2. 下载 mod 并提取翻译文件（流式 + 进度条）
+    let resp = client_fa
+        .download_mod_response(download_url)
+        .await?;
+    let zip_data = stream_download(resp).await?;
 
     let current_locale = extract_locale_from_zip(&zip_data)
         .with_context(|| format!("无法从 {} 的 zip 中提取翻译文件", mod_name))?;
@@ -1567,6 +1550,25 @@ pub async fn run_translation_pipeline(
             continue;
         }
 
+        // 提取下载 URL（搜索结果的 latest_release 已合成，mods_by_names 的来自 API）
+        let dl_url = mod_entry
+            .latest_release
+            .as_ref()
+            .map(|r| r.download_url.as_str())
+            .or_else(|| {
+                mod_entry
+                    .releases
+                    .as_ref()
+                    .and_then(|rs| rs.last())
+                    .map(|r| r.download_url.as_str())
+            });
+
+        let Some(dl_url) = dl_url else {
+            warn!("mod {} 没有可下载的版本，跳过", mod_entry.name);
+            pb.inc(1);
+            continue;
+        };
+
         // 每次处理前重新合并基础对照表 + AI 术语表（AI 可能在之前的 mod 中新增了术语）
         let mut combined_glossary = base_locale.clone();
         for (sec, props) in ai_glossary.iter() {
@@ -1583,6 +1585,7 @@ pub async fn run_translation_pipeline(
             &system_prompt,
             &mut ai_glossary,
             &mod_entry.name,
+            dl_url,
         )
         .await
         {
