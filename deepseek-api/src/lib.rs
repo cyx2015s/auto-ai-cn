@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 mod client_builder;
 mod error;
 pub mod request;
