@@ -39,6 +39,10 @@ enum Command {
         /// 从 Factorio 的 mod-list.json 中读取启用的 mod 列表
         #[arg(long)]
         mod_list: Option<PathBuf>,
+
+        /// 打印 LLM 的思考内容、文本内容和工具调用信息（调试用）
+        #[arg(long)]
+        verbose_llm: bool,
     },
 
     /// 将缓存中的翻译打包为 1 个 Factorio mod zip
@@ -109,7 +113,9 @@ async fn main() -> anyhow::Result<()> {
             limit,
             mut mods,
             mod_list,
+            verbose_llm,
         }) => {
+            flow::set_llm_verbose(verbose_llm);
             let config = FlowConfig::from_env()?;
 
             // 从 mod-list.json 中读取启用的 mod

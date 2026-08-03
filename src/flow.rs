@@ -77,6 +77,18 @@ use crate::{
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
+// 全局调试开关
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// 全局 LLM 详细日志开关（打印思考内容 / 文本内容 / 工具调用）
+static LLM_VERBOSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 设置是否打印 LLM 的思考内容、文本内容和工具调用信息（调试用）
+pub fn set_llm_verbose(enabled: bool) {
+    LLM_VERBOSE.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // 类型别名
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -833,6 +845,30 @@ pub async fn call_llm_for_translation(
 
         // 无论 finish_reason 是什么，只要 assistant 消息带 tool_calls 就处理
         let msg = resp.choices[0].message.as_ref();
+
+        // 可选详细日志：打印思考内容、文本内容、工具调用
+        if LLM_VERBOSE.load(std::sync::atomic::Ordering::Relaxed) {
+            println!(
+                "\n===== LLM 响应 #{loop_count} (finish_reason: {:?}) =====",
+                resp.choices[0].finish_reason
+            );
+            if let Some(msg) = msg {
+                if let Some(reasoning) = &msg.reasoning_content {
+                    println!("--- 思考内容 ---\n{reasoning}");
+                }
+                if !msg.content.is_empty() {
+                    println!("--- 文本内容 ---\n{}", msg.content);
+                }
+                if let Some(tool_calls) = &msg.tool_calls {
+                    println!("--- 工具调用 ---");
+                    for tc in tool_calls {
+                        println!("  - {} (id={})", tc.function.name, tc.id);
+                        println!("    arguments: {}", tc.function.arguments);
+                    }
+                }
+            }
+            println!("===== 结束 =====\n");
+        }
 
         if let Some(msg) = msg
             && let Some(ref tool_calls) = msg.tool_calls
