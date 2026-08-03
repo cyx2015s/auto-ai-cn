@@ -290,9 +290,34 @@ pub struct Delta {
     /// Reasoning content of the delta change.
     #[serde(default)]
     pub reasoning_content: Option<String>,
+    /// Tool call deltas (incremental chunks, aggregated by index).
+    #[serde(default)]
+    pub tool_calls: Option<Vec<DeltaToolCall>>,
     /// Role of the delta change sender.
     #[serde(default)]
     pub role: String,
+}
+
+/// An incremental tool call delta in a streaming response.
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct DeltaToolCall {
+    /// Index of the tool call (used to aggregate chunks).
+    #[serde(default)]
+    pub index: Option<usize>,
+    /// Tool call id (present only on the first chunk).
+    pub id: Option<String>,
+    /// Tool call type, e.g. "function".
+    #[serde(rename = "type")]
+    pub tool_type: Option<String>,
+    /// Function name and arguments (arguments are streamed in pieces).
+    pub function: Option<DeltaToolCallFunction>,
+}
+
+/// Function fields of a streaming tool call delta.
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct DeltaToolCallFunction {
+    pub name: Option<String>,
+    pub arguments: Option<String>,
 }
 
 /// Represents a choice stream with its associated delta change.

@@ -811,6 +811,138 @@ pub struct SubmittedGlossaryEntry {
     pub reason: Option<String>,
 }
 
+/// 聚合流式 tool_calls 增量（按 index 合并 id / name / arguments）
+fn aggregate_delta_tool_calls(
+    deltas: &[deepseek_api::response::DeltaToolCall],
+) -> Vec<deepseek_api::response::ToolCall> {
+    let mut map: BTreeMap<usize, (Option<String>, String, String)> = BTreeMap::new();
+    for tc in deltas {
+        let idx = tc.index.unwrap_or(0);
+        let entry = map
+            .entry(idx)
+            .or_insert((None, String::new(), String::new()));
+        if let Some(id) = &tc.id {
+            entry.0 = Some(id.clone());
+        }
+        if let Some(f) = &tc.function {
+            if let Some(name) = &f.name {
+                entry.1 = name.clone();
+            }
+            if let Some(args) = &f.arguments {
+                entry.2.push_str(args);
+            }
+        }
+    }
+    map.into_iter()
+        .map(|(_, (id, name, arguments))| deepseek_api::response::ToolCall {
+            id: id.unwrap_or_default(),
+            tool_type: "function".to_string(),
+            function: deepseek_api::response::Function { name, arguments },
+        })
+        .collect()
+}
+
+/// 获取一次 LLM 响应。
+///
+/// 始终使用流式（SSE）请求：长响应（推理模型的思考 + 超长输出）期间连接持续
+/// 活跃，可规避网关超时导致的请求失败/截断。`verbose` 为 `true` 时额外打印
+/// 思考内容、文本内容和工具调用增量。
+async fn fetch_llm_response(
+    client: &deepseek_api::DeepSeekClient,
+    messages: &[MessageRequest],
+    tools: &[ToolObject],
+    verbose: bool,
+) -> anyhow::Result<(
+    deepseek_api::response::AssistantMessage,
+    FinishReason,
+)> {
+    let chat_resp = CompletionsRequestBuilder::new(messages)
+        .tools(tools)
+        .stream(true)
+        .do_request(client)
+        .await
+        .context("LLM API 请求失败")?;
+
+    // 流式聚合 + 实时打印
+    let mut stream = chat_resp.must_stream();
+    let mut content = String::new();
+    let mut reasoning = String::new();
+    let mut tool_deltas: Vec<deepseek_api::response::DeltaToolCall> = Vec::new();
+    let mut finish_reason = FinishReason::Stop;
+
+    if verbose {
+        println!("\n===== LLM 流式响应 =====");
+    }
+    while let Some(item) = stream.next().await {
+        let chunk = item.context("LLM 流式响应解析失败")?;
+        if let Some(choice) = chunk.choices.first() {
+            let delta = &choice.delta;
+            if let Some(rc) = &delta.reasoning_content {
+                if !rc.is_empty() {
+                    if verbose {
+                        print!("{}", rc);
+                    }
+                    reasoning.push_str(rc);
+                }
+            }
+            if let Some(c) = &delta.content {
+                if !c.is_empty() {
+                    if verbose {
+                        print!("{}", c);
+                    }
+                    content.push_str(c);
+                }
+            }
+            if let Some(tcs) = &delta.tool_calls {
+                for tc in tcs {
+                    if verbose {
+                        if let Some(f) = &tc.function
+                            && let Some(args) = &f.arguments
+                        {
+                            print!("{}", args);
+                        }
+                    }
+                }
+                tool_deltas.extend(tcs.iter().cloned());
+            }
+            if let Some(fr) = &choice.finish_reason {
+                finish_reason = fr.clone();
+            }
+        }
+    }
+    if verbose {
+        println!(
+            "\n===== 流式响应结束 (finish_reason: {:?}) =====",
+            finish_reason
+        );
+    }
+
+    let tool_calls = aggregate_delta_tool_calls(&tool_deltas);
+    let assistant_msg = deepseek_api::response::AssistantMessage {
+        content,
+        reasoning_content: Some(reasoning),
+        tool_calls: if tool_calls.is_empty() {
+            None
+        } else {
+            Some(tool_calls)
+        },
+        ..Default::default()
+    };
+
+    // 打印聚合后的工具调用信息
+    if verbose {
+        if let Some(tcs) = &assistant_msg.tool_calls {
+            println!("--- 工具调用 ---");
+            for tc in tcs {
+                println!("  - {} (id={})", tc.function.name, tc.id);
+                println!("    arguments: {}", tc.function.arguments);
+            }
+        }
+    }
+
+    Ok((assistant_msg, finish_reason))
+}
+
 /// 调用 LLM 获取翻译。
 ///
 /// 使用 function calling 机制，LLM 通过多次调用 `submit_translation`
@@ -836,42 +968,19 @@ pub async fn call_llm_for_translation(
     while loop_count < MAX_LOOPS {
         loop_count += 1;
 
-        let resp = CompletionsRequestBuilder::new(&messages)
-            .tools(&tools)
-            .do_request(client)
-            .await
-            .context("LLM API 请求失败")?
-            .must_response();
+        // verbose 时流式获取并实时打印，否则一次性获取
+        let (assistant_msg, finish_reason) = fetch_llm_response(
+            client,
+            &messages,
+            &tools,
+            LLM_VERBOSE.load(std::sync::atomic::Ordering::Relaxed),
+        )
+        .await?;
 
         // 无论 finish_reason 是什么，只要 assistant 消息带 tool_calls 就处理
-        let msg = resp.choices[0].message.as_ref();
+        let msg = &assistant_msg;
 
-        // 可选详细日志：打印思考内容、文本内容、工具调用
-        if LLM_VERBOSE.load(std::sync::atomic::Ordering::Relaxed) {
-            println!(
-                "\n===== LLM 响应 #{loop_count} (finish_reason: {:?}) =====",
-                resp.choices[0].finish_reason
-            );
-            if let Some(msg) = msg {
-                if let Some(reasoning) = &msg.reasoning_content {
-                    println!("--- 思考内容 ---\n{reasoning}");
-                }
-                if !msg.content.is_empty() {
-                    println!("--- 文本内容 ---\n{}", msg.content);
-                }
-                if let Some(tool_calls) = &msg.tool_calls {
-                    println!("--- 工具调用 ---");
-                    for tc in tool_calls {
-                        println!("  - {} (id={})", tc.function.name, tc.id);
-                        println!("    arguments: {}", tc.function.arguments);
-                    }
-                }
-            }
-            println!("===== 结束 =====\n");
-        }
-
-        if let Some(msg) = msg
-            && let Some(ref tool_calls) = msg.tool_calls
+        if let Some(ref tool_calls) = msg.tool_calls
             && !tool_calls.is_empty()
         {
             messages.push(MessageRequest::Assistant(msg.clone()));
@@ -1080,7 +1189,7 @@ pub async fn call_llm_for_translation(
                 }
 
                 // 如果 finish_reason 是 Stop，不再追问
-                if resp.choices[0].finish_reason == FinishReason::Stop {
+                if finish_reason == FinishReason::Stop {
                     break;
                 }
 
@@ -1093,13 +1202,12 @@ pub async fn call_llm_for_translation(
         }
 
         // 没有 tool_calls：如果已有 assistant 文本回复，结束；否则是纯文本响应
-        if let Some(msg) = msg
-            && !msg.content.is_empty()
+        if !msg.content.is_empty()
         {
             messages.push(MessageRequest::Assistant(msg.clone()));
             debug!("LLM 最终回复: {}", msg.content);
         }
-        if resp.choices[0].finish_reason == FinishReason::Stop {
+        if finish_reason == FinishReason::Stop {
             break;
         }
     }
