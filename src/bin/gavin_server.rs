@@ -21,17 +21,17 @@ use log::info;
 
 /// 从 tanvec-ai-cn 翻译包提取翻译并重打包
 #[derive(Parser)]
-#[command(name = "gavin-server", version, about)]
+#[command(name = "gavin-server", version, about, disable_version_flag = true)]
 struct Cli {
-    /// 输出 mod 名 [默认: gavin-server]
-    #[arg(long, default_value = "gavin-server")]
-    name: String,
+    /// 输出 mod 名（不传则交互式询问）
+    #[arg(long)]
+    name: Option<String>,
 
-    /// 作者名 [默认: gavin]
-    #[arg(long, default_value = "gavin")]
-    author: String,
+    /// 作者名（不传则交互式询问）
+    #[arg(long)]
+    author: Option<String>,
 
-    /// 版本号 [默认: UTC+8 当天日期]
+    /// 版本号（不传则交互式询问，回车使用 UTC+8 当天日期）
     #[arg(long)]
     version: Option<String>,
 
@@ -135,6 +135,20 @@ fn pause() {
     std::io::stdin().read_exact(&mut [0]).ok();
 }
 
+/// 交互式提示输入；直接回车使用默认值
+fn prompt(prompt: &str, default: &str) -> String {
+    print!("{} [{}]: ", prompt, default);
+    std::io::stdout().flush().ok();
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).ok();
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        default.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 #[tokio::main]
 async fn main() {
     env_logger::builder()
@@ -157,17 +171,29 @@ async fn run() -> anyhow::Result<()> {
     println!("========================================");
     println!();
 
-    // 版本号默认为 UTC+8 当天日期
-    let version = cli.version.unwrap_or_else(|| {
+    // 模组名 / 作者 / 版本号：命令行未传则交互式询问（回车使用默认值）
+    let name = match cli.name {
+        Some(n) => n,
+        None => prompt("输出模组名", "tanvec-ai-cn-picked"),
+    };
+    let author = match cli.author {
+        Some(a) => a,
+        None => prompt("作者名", "tanvec"),
+    };
+    let default_version = {
         let offset = FixedOffset::east_opt(8 * 3600).unwrap();
         Utc::now()
             .with_timezone(&offset)
             .format("%Y.%m.%d")
             .to_string()
-    });
+    };
+    let version = match cli.version {
+        Some(v) => v,
+        None => prompt("版本号", &default_version),
+    };
     println!("📋 配置信息:");
-    println!("   输出模组名: {}_{}", cli.name, version);
-    println!("   作者: {}", cli.author);
+    println!("   输出模组名: {}_{}", name, version);
+    println!("   作者: {}", author);
     println!("   mod-list.json: {}", cli.mod_list.display());
     println!();
 
@@ -206,7 +232,7 @@ async fn run() -> anyhow::Result<()> {
             info!("忽略 mod: {}", mod_name);
             continue;
         }
-        if mod_name == &cli.name {
+        if mod_name == &name {
             info!("忽略输出 mod 自身: {}", mod_name);
             // 避免自引用
             continue;
@@ -237,7 +263,7 @@ async fn run() -> anyhow::Result<()> {
     println!("✅ 匹配到 {} 个 mod 的翻译，正在打包...", matched.len());
 
     // 打包
-    let output_name = format!("{}_{}", cli.name, version);
+    let output_name = format!("{}_{}", name, version);
     let output_zip = cli.output_dir.join(format!("{}.zip", output_name));
     let file = std::fs::File::create(&output_zip)?;
     let mut zip_writer = zip::ZipWriter::new(file);
@@ -260,9 +286,9 @@ async fn run() -> anyhow::Result<()> {
     dependencies.push("! tanvec-ai-cn".to_string());
 
     let info_json = serde_json::json!({
-        "name": cli.name,
-        "title": format!("{} 的专用汉化整合包", cli.author),
-        "author": cli.author,
+        "name": name,
+        "title": format!("{} 的专用汉化整合包", author),
+        "author": author,
         "version": version,
         "description": format!("包含 {} 个模组的 AI 中文翻译。由 gavin-server 从 tanvec-ai-cn 翻译包中自动提取。", matched.len()),
         "factorio_version": "2.1",
@@ -281,7 +307,7 @@ async fn run() -> anyhow::Result<()> {
     println!("  🎉 打包完成！");
     println!("========================================");
     println!("  文件: {}", output_zip.display());
-    println!("  模组名: {}_{}", cli.name, version);
+    println!("  模组名: {}_{}", name, version);
     println!("  包含 {} 个 mod 的翻译:", matched.len());
     for m in &matched {
         println!("    ✓ {}", m);
@@ -299,8 +325,8 @@ async fn run() -> anyhow::Result<()> {
         println!("📤 正在上传到 Mod Portal...");
         let client = factorio_api::FactorioWebClient::anonymous();
         let zip_data = std::fs::read(&output_zip)?;
-        client.upload_mod(api_key, &cli.name, &zip_data).await?;
-        println!("✅ 上传成功！模组名: {}", cli.name);
+        client.upload_mod(api_key, &name, &zip_data).await?;
+        println!("✅ 上传成功！模组名: {}", name);
     } else {
         println!("💡 提示: 使用 --upload-key 参数可自动上传到 Mod Portal");
     }
