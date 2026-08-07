@@ -156,7 +156,7 @@ pub fn pack_all_to_one_mod(
         "factorio_version": "2.1",
         "dependencies": ["base >= 2.1"],
         "author": "tanvec",
-            "description": format!("包含 {} 个模组的 AI 中文翻译。在模组官网上查看详细更新信息。手动解压可以按需求启用翻译，请查看 locale/zh-CN/ 下的 toggle_py 文件。默认禁用了所有会覆盖原版游戏词条的 mod 的翻译内容。联机时建议所有玩家都使用解压版本的 mod，并且手动运行 Python 脚本只启用对应翻译。", packed_count)
+            "description": format!("包含 {} 个模组的 AI 中文翻译。在模组官网上查看详细更新信息。手动解压可以按需求启用翻译，请查看 locale/zh-CN/ 下的 toggle_py 文件。默认禁用了所有会覆盖原版游戏词条的 mod 的翻译内容。联机时建议所有玩家都使用解压版本的 mod，并且手动运行 Python 脚本只启用对应翻译。详细信息请参见 github 链接 https://github.com/cyx2015s/auto-ai-cn", packed_count)
     });
     let info_path = format!("{}/info.json", pack_name);
     zip_writer.start_file(&info_path, options)?;
