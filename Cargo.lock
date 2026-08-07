@@ -2100,6 +2100,7 @@ dependencies = [
  "indicatif",
  "indicatif-log-bridge",
  "log",
+ "regex",
  "reqwest",
  "rust-ini",
  "schemars 1.2.1",
