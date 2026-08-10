@@ -1594,6 +1594,7 @@ pub async fn run_translation_pipeline(
 ) -> anyhow::Result<()> {
     // 加载上次运行时间
     let state_path = config.cache_dir.join(".pipeline_state");
+    let now = Utc::now();
     let mut state: PipelineState = if state_path.exists() {
         std::fs::read_to_string(&state_path)
             .ok()
@@ -1752,7 +1753,6 @@ pub async fn run_translation_pipeline(
 
     // 更新上次运行时间（仅在自动模式下）
     if is_auto {
-        let now = Utc::now();
         state.last_run = now;
         std::fs::create_dir_all(&config.cache_dir)?;
         {
