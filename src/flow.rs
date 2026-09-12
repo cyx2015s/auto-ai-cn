@@ -340,11 +340,10 @@ pub fn extract_base_glossary(game_data_path: &Path) -> anyhow::Result<ini::Ini> 
                     {
                         continue;
                     }
-                    if let Some(zh_value) = zh_ini.section(section).and_then(|s| s.get(key)) {
-                        if !zh_value.is_empty() && zh_value != en_value {
+                    if let Some(zh_value) = zh_ini.section(section).and_then(|s| s.get(key))
+                        && !zh_value.is_empty() && zh_value != en_value {
                             glossary.with_general_section().set(en_value, zh_value);
                         }
-                    }
                 }
             }
         }
@@ -375,7 +374,7 @@ pub fn extract_base_all(
         {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().map_or(true, |e| e != "cfg") {
+            if path.extension().is_none_or(|e| e != "cfg") {
                 continue;
             }
             let content = std::fs::read_to_string(&path)?;
@@ -491,7 +490,7 @@ asteroid 翻译为「星岩」，asteroid chunk 翻译为「星块」。
 
 ### 插件
 
-用于增幅建筑物效果的module-name，需要将module翻译成「插件」，以下左侧的翻译需要更改为右侧的。efficiency module:「效率模块」→「效率插件」，productivity module:「生产模块」→「产能插件」，speed module:「速度模块」→「速度插件」，quality module:「质量模块」→「品质插件」。
+用于增幅建筑物效果的module-name，需要将module翻译成「插件」，以下左侧的翻译需要更改为右侧的。efficiency module:「效率模块」→「节能插件」，productivity module:「生产模块」→「产能插件」，speed module:「速度模块」→「速度插件」，quality module:「质量模块」→「品质插件」。
 
 ### 插件塔
 
@@ -879,31 +878,28 @@ async fn fetch_llm_response(
         let chunk = item.context("LLM 流式响应解析失败")?;
         if let Some(choice) = chunk.choices.first() {
             let delta = &choice.delta;
-            if let Some(rc) = &delta.reasoning_content {
-                if !rc.is_empty() {
+            if let Some(rc) = &delta.reasoning_content
+                && !rc.is_empty() {
                     if verbose {
                         print!("{}", rc);
                     }
                     reasoning.push_str(rc);
                 }
-            }
-            if let Some(c) = &delta.content {
-                if !c.is_empty() {
+            if let Some(c) = &delta.content
+                && !c.is_empty() {
                     if verbose {
                         print!("{}", c);
                     }
                     content.push_str(c);
                 }
-            }
             if let Some(tcs) = &delta.tool_calls {
                 for tc in tcs {
-                    if verbose {
-                        if let Some(f) = &tc.function
+                    if verbose
+                        && let Some(f) = &tc.function
                             && let Some(args) = &f.arguments
                         {
                             print!("{}", args);
                         }
-                    }
                 }
                 tool_deltas.extend(tcs.iter().cloned());
             }
@@ -932,15 +928,14 @@ async fn fetch_llm_response(
     };
 
     // 打印聚合后的工具调用信息
-    if verbose {
-        if let Some(tcs) = &assistant_msg.tool_calls {
+    if verbose
+        && let Some(tcs) = &assistant_msg.tool_calls {
             println!("--- 工具调用 ---");
             for tc in tcs {
                 println!("  - {} (id={})", tc.function.name, tc.id);
                 println!("    arguments: {}", tc.function.arguments);
             }
         }
-    }
 
     Ok((assistant_msg, finish_reason))
 }
@@ -1008,7 +1003,7 @@ pub async fn call_llm_for_translation(
                                         for (sec, props) in ini.iter() {
                                             for (k, v) in props.iter() {
                                                 if v.chars()
-                                                    .any(|c| c >= '\u{4e00}' && c <= '\u{9fff}')
+                                                    .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c))
                                                 {
                                                     has_chinese_count += 1;
                                                 }
@@ -1104,9 +1099,7 @@ pub async fn call_llm_for_translation(
                                             submitted.file_name
                                         );
                                         messages.push(MessageRequest::Tool(ToolMessageRequest::new(
-                                        &format!(
-                                            "格式无效：请提供 ini_content（整文件）或 section+entries（按 section）"
-                                        ),
+                                        "格式无效：请提供 ini_content（整文件）或 section+entries（按 section）",
                                         &tool_call.id,
                                     )));
                                     }
@@ -1237,7 +1230,7 @@ const TARGET_LANG: &str = "zh-CN";
 /// 当前固定从 en 翻译到 zh-CN：
 /// - 如果 mod 只有 zh-CN 没有 en → 中文优先 mod，跳过
 /// - 如果 mod 没有 en → 无法翻译，跳过
-
+/// 
 /// 流式下载（自动使用全局进度条，完成后自动消失）
 async fn stream_download(resp: reqwest::Response) -> anyhow::Result<Vec<u8>> {
     let total = resp.content_length().unwrap_or(0);
@@ -1507,7 +1500,7 @@ async fn process_mod(
             missing_count,
             round + 1
         );
-        info!("  ↳ 遗漏内容详细信息: {:?}", &missing_diffs);
+        info!("  ↳ 遗漏内容详细信息: {:?}", missing_diffs);
         let supplement_prompt = format!(
             "## 补充翻译任务\n\n以下键在上轮翻译中被遗漏，请补充翻译：\n\n{}",
             build_user_prompt(base_locale, &missing_diffs, None)?

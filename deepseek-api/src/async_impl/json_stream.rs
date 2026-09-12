@@ -66,7 +66,7 @@ impl<T: DeserializeOwned + Send + 'static> JsonStream<T> {
     pub fn new(response: Response) -> Self {
         let byte_stream = response
             .bytes_stream()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+            .map_err(|e| std::io::Error::other(e));
 
         let async_read = byte_stream.into_async_read();
         let processed = BufReader::new(async_read)

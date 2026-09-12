@@ -21,7 +21,6 @@ autoexamples = false
 autotests = false
 autobenches = false
 description = "DeepSeek API SDK is a powerful Rust client library for interacting with the DeepSeek service"
-readme = "README.md"
 keywords = [
     "deepseek",
     "api",

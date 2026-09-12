@@ -120,7 +120,7 @@ fn load_enabled_mods(path: &Path) -> anyhow::Result<Vec<String>> {
     Ok(mods)
 }
 
-const IGNORED_MODS: &[&'static str] = &[
+const IGNORED_MODS: &[&str] = &[
     "base",
     "space-age",
     "quality",

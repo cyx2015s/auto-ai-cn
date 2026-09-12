@@ -144,7 +144,7 @@ pub fn pack_all_to_one_mod(
 
     // toggle.py， 官网不允许传带可执行文件的 mod 包，作此变通
     let zip_path = format!("{}/locale/zh-CN/toggle_py", pack_name);
-    const TOGGLE_PY: &'static str = include_str!("templates/toggle.py");
+    const TOGGLE_PY: &str = include_str!("templates/toggle.py");
     zip_writer.start_file(&zip_path, options)?;
     zip_writer.write_all(TOGGLE_PY.as_bytes())?;
 

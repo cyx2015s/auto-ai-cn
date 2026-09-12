@@ -126,11 +126,10 @@ async fn main() -> anyhow::Result<()> {
                     serde_json::from_str(&content).context("无法解析 mod-list.json")?;
                 if let Some(list) = json["mods"].as_array() {
                     for m in list {
-                        if m["enabled"].as_bool().unwrap_or(true) {
-                            if let Some(name) = m["name"].as_str() {
+                        if m["enabled"].as_bool().unwrap_or(true)
+                            && let Some(name) = m["name"].as_str() {
                                 mods.push(name.to_string());
                             }
-                        }
                     }
                 }
             }
