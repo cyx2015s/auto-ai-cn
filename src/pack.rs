@@ -12,8 +12,7 @@
 //! 翻译包不声明对源 mod 的依赖——未安装的源 mod 的翻译条目不会被游戏加载。
 
 use std::{
-    io::Write,
-    path::{Path, PathBuf},
+    collections::HashSet, io::Write, path::{Path, PathBuf},
 };
 
 use anyhow::Context;
@@ -119,6 +118,12 @@ pub fn pack_all_to_one_mod(
             continue;
         }
 
+        // 临时修复：删除所有顶层键和内容重合的部分
+        let sections = merged_ini.sections().filter_map(|s| s.map(str::to_owned)).collect::<HashSet<_>>();
+        sections.iter().for_each(|s| {
+            merged_ini.general_section_mut().remove(s);
+        });
+        
         let ini_str = translation::ini_to_str(&merged_ini)?;
 
         // protect 模式下检查是否覆盖原版 key
