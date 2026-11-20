@@ -18,40 +18,41 @@ def main():
     with open(mod_list_json_path, "r", encoding="utf-8") as f:
         mod_list = json.load(f)
 
+    enabled_map = {
+        mod["name"]: mod.get("enabled", True)
+        for mod in mod_list.get("mods", [])
+        if "name" in mod
+    }
+
     for file in Path(__file__).parent.iterdir():
-        if file.is_file() and (file.suffix == ".cfg" or file.suffix == ".disabled"):
-            # print(f"正在处理 {file.name}...")
-            mod_name = file.stem
-            if mod_name.endswith(".cfg"):
-                mod_name = mod_name[:-4]  # 去掉 .cfg 后缀
-            print(f"正在处理 {file.name}，对应mod名称为 {mod_name}...")
-            mod_info = next(
-                (mod for mod in mod_list["mods"] if mod["name"] == mod_name), None
-            )
-            if mod_info is not None:
-                print(f"找到mod {mod_name}，enabled={mod_info['enabled']}")
-                enabled = mod_info["enabled"]
-                disabled_name = f"{mod_name}.cfg.disabled"
-                enabled_name = f"{mod_name}.cfg"
-                if enabled:
-                    # 如果mod启用，确保文件名是enabled_name
-                    if file.name != enabled_name:
-                        new_path = file.parent / enabled_name
-                        print(f"重命名 {file.name} 为 {enabled_name}")
-                        os.rename(file, new_path)
-                else:
-                    # 如果mod禁用，确保文件名是disabled_name
-                    if file.name != disabled_name:
-                        new_path = file.parent / disabled_name
-                        print(f"重命名 {file.name} 为 {disabled_name}")
-                        os.rename(file, new_path)
-            else:
-                if file.name.endswith(".cfg.disabled"):
-                    # 如果文件名已经是.disabled，保持不变
-                    continue
-                else:
-                    print(f"重命名 {file.name} 为 {file.stem}.cfg.disabled")
-                    os.rename(file, file.with_suffix(".cfg.disabled"))
+        if not file.is_file():
+            continue
+        if file.name.endswith(".cfg.disabled"):
+            base_cfg_name = file.name[:-9]  # 去掉 ".disabled"
+        elif file.name.endswith(".cfg"):
+            base_cfg_name = file.name
+        else:
+            continue
+
+        # 支持 <mod_name>[.top][.override].cfg[.disabled]
+        mod_name = base_cfg_name.split(".")[0]
+        enabled_name = base_cfg_name
+        disabled_name = f"{base_cfg_name}.disabled"
+
+        print(f"正在处理 {file.name}，对应mod名称为 {mod_name}...")
+        if mod_name in enabled_map:
+            enabled = enabled_map[mod_name]
+            print(f"找到mod {mod_name}，enabled={enabled}")
+            target_name = enabled_name if enabled else disabled_name
+            if file.name != target_name:
+                new_path = file.parent / target_name
+                print(f"重命名 {file.name} 为 {target_name}")
+                os.replace(file, new_path)
+        else:
+            if file.name != disabled_name:
+                new_path = file.parent / disabled_name
+                print(f"重命名 {file.name} 为 {disabled_name}")
+                os.replace(file, new_path)
 
 
 main()

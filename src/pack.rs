@@ -5,35 +5,150 @@
 //! 输出结构：
 //! ```text
 //! <pack_name>_<date>/
-//!   locale/zh-CN/<mod_name>.cfg   （每个源 mod 一个文件）
+//!   locale/zh-CN/<mod_name>.cfg                   （无原版冲突的翻译，默认启用）
+//!   locale/zh-CN/<mod_name>.top.cfg               （仅当同文件内存在顶层键与 section 同名冲突时拆出）
+//!   locale/zh-CN/<mod_name>.override.cfg.disabled （覆盖原版词条的翻译，默认禁用）
+//!   locale/zh-CN/<mod_name>.top.override.cfg.disabled
+//!   locale/zh-CN/toggle_py
+//!   control.lua
 //!   info.json
 //! ```
 //!
-//! 翻译包不声明对源 mod 的依赖——未安装的源 mod 的翻译条目不会被游戏加载。
+//! 为避免未安装的 mod 覆盖原版游戏词条，protect 模式下按词条级拆分为默认启用的安全文件与默认禁用的 `.override.cfg.disabled`。
 
 use std::{
-    collections::HashSet, io::Write, path::{Path, PathBuf},
+    collections::HashMap,
+    io::Write,
+    path::{Path, PathBuf},
 };
 
 use anyhow::Context;
 use chrono::Utc;
-use log::{info, warn};
+use log::{debug, info, warn};
 use serde_json;
 
 use crate::translation;
 
+fn merge_lang_files(lang_info: &translation::LangInfo, mod_name: &str) -> ini::Ini {
+    let mut merged = ini::Ini::new();
+    for (_file_name, file_content) in &lang_info.contents {
+        let ini = match translation::str_to_ini(file_content) {
+            Ok(ini) => ini,
+            Err(e) => {
+                warn!("无法解析 {} 的翻译文件: {}", mod_name, e);
+                continue;
+            }
+        };
+        for (section, props) in ini.iter() {
+            for (k, v) in props.iter() {
+                merged.with_section(section).set(k, v);
+            }
+        }
+    }
+    merged
+}
+
+fn ini_has_entries(ini: &ini::Ini) -> bool {
+    ini.iter().any(|(_, props)| !props.is_empty())
+}
+
+fn write_ini_entry(
+    zip_writer: &mut zip::ZipWriter<std::fs::File>,
+    options: zip::write::SimpleFileOptions,
+    zip_path: &str,
+    ini: &ini::Ini,
+) -> anyhow::Result<bool> {
+    if !ini_has_entries(ini) {
+        return Ok(false);
+    }
+    let ini_str = translation::ini_to_str(ini)?;
+    zip_writer.start_file(zip_path, options)?;
+    zip_writer.write_all(ini_str.as_bytes())?;
+    Ok(true)
+}
+
+/// 若同一个 `Ini` 中同时存在顶层键（`general_section`）和与之同名的 `[section]`，
+/// Factorio 单文件解析器会拒绝或错乱（见 https://forums.factorio.com/viewtopic.php?p=703719#p703719）。
+/// 本函数将顶层键拆入独立的 `(top_ini, sectioned_ini)`，避免丢弃任何顶层翻译。
+pub fn split_top_level_if_colliding(mut ini: ini::Ini) -> (Option<ini::Ini>, Option<ini::Ini>) {
+    let has_collision = if let Some(gen_props) = ini.section(None::<String>)
+        && !gen_props.is_empty()
+    {
+        ini.sections()
+            .flatten()
+            .any(|sec_name| gen_props.get(sec_name).is_some())
+    } else {
+        false
+    };
+
+    if !has_collision {
+        let sec_opt = if ini_has_entries(&ini) {
+            Some(ini)
+        } else {
+            None
+        };
+        return (None, sec_opt);
+    }
+
+    let mut top_ini = ini::Ini::new();
+    if let Some(gen_props) = ini.delete(None::<String>) {
+        for (k, v) in gen_props.iter() {
+            top_ini.with_general_section().set(k, v);
+        }
+    }
+
+    let top_opt = if ini_has_entries(&top_ini) {
+        Some(top_ini)
+    } else {
+        None
+    };
+    let sec_opt = if ini_has_entries(&ini) {
+        Some(ini)
+    } else {
+        None
+    };
+    (top_opt, sec_opt)
+}
+
+fn write_mod_ini_split(
+    zip_writer: &mut zip::ZipWriter<std::fs::File>,
+    options: zip::write::SimpleFileOptions,
+    pack_name: &str,
+    mod_name: &str,
+    ini: ini::Ini,
+    is_override: bool,
+) -> anyhow::Result<bool> {
+    let suffix = if is_override {
+        "override.cfg.disabled"
+    } else {
+        "cfg"
+    };
+    let (top_opt, sec_opt) = split_top_level_if_colliding(ini);
+    let mut wrote = false;
+    if let Some(sec_ini) = sec_opt {
+        let path = format!("{}/locale/zh-CN/{}.{}", pack_name, mod_name, suffix);
+        wrote |= write_ini_entry(zip_writer, options, &path, &sec_ini)?;
+    }
+    if let Some(top_ini) = top_opt {
+        let path = format!("{}/locale/zh-CN/{}.top.{}", pack_name, mod_name, suffix);
+        wrote |= write_ini_entry(zip_writer, options, &path, &top_ini)?;
+    }
+    Ok(wrote)
+}
+
 /// 将 cache 目录中所有翻译缓存打包为 1 个 Factorio mod zip。
 ///
-/// 每个源 mod 的 zh-CN 翻译合并为一个 `.cfg` 文件。
-///
-/// 如果 `protect` 为 true 且提供了 `base_keys`，检测到 mod 翻译覆盖原版 key 时，
-/// 后缀用 `.cfg.disabled` 而非 `.cfg`，避免覆盖原版翻译。
+/// 如果 `protect` 为 true 且提供了 `base_keys`：
+/// - 与原版译文完全一致，或英文原文与原版英文一致的冗余词条会被省略（避免 AI 标点差异导致误覆盖）；
+/// - 真正修改了原版含义的词条（含 `item-name`/`item-description` 对原版 `entity`/`equipment` 的跨节回退劫持）
+///   会拆出至 `<mod_name>.override.cfg.disabled`（默认禁用），其余独有词条保留在 `<mod_name>.cfg`（默认启用）。
 pub fn pack_all_to_one_mod(
     cache_dir: &Path,
     output_dir: &Path,
     pack_name: &str,
     protect: bool,
-    base_keys: Option<&std::collections::HashMap<String, String>>,
+    base_keys: Option<&HashMap<String, String>>,
+    base_en_keys: Option<&HashMap<String, String>>,
 ) -> anyhow::Result<PathBuf> {
     // 扫描缓存目录
     let mut cache_files: Vec<PathBuf> = Vec::new();
@@ -69,7 +184,8 @@ pub fn pack_all_to_one_mod(
     let pb = crate::progress::new_bar();
     pb.set_length(cache_files.len() as u64);
 
-    let mut packed_count = 0;
+    let mut packed_count = 0usize;
+    let mut override_mod_count = 0usize;
 
     for cache_path in &cache_files {
         let mod_name = cache_path
@@ -97,61 +213,72 @@ pub fn pack_all_to_one_mod(
             continue;
         };
 
-        // 合并该 mod 的所有翻译文件为一个 INI
-        let mut merged_ini = ini::Ini::new();
-        for (_file_name, file_content) in &target_lang.contents {
-            let ini = match translation::str_to_ini(file_content) {
-                Ok(ini) => ini,
-                Err(e) => {
-                    warn!("无法解析 {} 的翻译文件: {}", mod_name, e);
-                    continue;
-                }
-            };
-            for (section, props) in ini.iter() {
-                for (k, v) in props.iter() {
-                    merged_ini.with_section(section).set(k, v);
-                }
-            }
-        }
-
-        if merged_ini.is_empty() {
+        let mut merged_ini = merge_lang_files(target_lang, mod_name);
+        if merged_ini.is_empty() || !ini_has_entries(&merged_ini) {
             continue;
         }
 
-        // 临时修复：删除所有顶层键和内容重合的部分
-        let sections = merged_ini.sections().filter_map(|s| s.map(str::to_owned)).collect::<HashSet<_>>();
-        sections.iter().for_each(|s| {
-            merged_ini.general_section_mut().remove(s);
-        });
-        
-        let ini_str = translation::ini_to_str(&merged_ini)?;
+        // 防御性修正：避免打包后的 locale-identifier=en 覆盖 flib 等模组的语言识别
+        if merged_ini
+            .section(None::<String>)
+            .and_then(|s| s.get("locale-identifier"))
+            == Some("en")
+        {
+            merged_ini
+                .with_general_section()
+                .set("locale-identifier", "zh-CN");
+        }
 
-        // protect 模式下检查是否覆盖原版 key
-        let suffix = if protect && let Some(base_keys) = base_keys {
-            let overlaps = has_base_overlap(&merged_ini, base_keys);
-            if overlaps {
-                info!("  ↳ {} 覆盖原版翻译，标记为 .cfg.disabled", mod_name);
-                "cfg.disabled"
-            } else {
-                "cfg"
-            }
+        let mod_en_ini = locale_info
+            .contents
+            .get("en")
+            .map(|en_lang| merge_lang_files(en_lang, mod_name));
+
+        let (safe_ini, override_ini) = if protect && let Some(base_keys) = base_keys {
+            split_ini_by_base_overlap(
+                &merged_ini,
+                mod_en_ini.as_ref(),
+                base_keys,
+                base_en_keys,
+            )
         } else {
-            "cfg"
+            (merged_ini, ini::Ini::new())
         };
 
-        let zip_path = format!("{}/locale/zh-CN/{}.{}", pack_name, mod_name, suffix);
-        zip_writer.start_file(&zip_path, options)?;
-        zip_writer.write_all(ini_str.as_bytes())?;
-        packed_count += 1;
+        let wrote_safe =
+            write_mod_ini_split(&mut zip_writer, options, pack_name, mod_name, safe_ini, false)?;
+        let wrote_override = write_mod_ini_split(
+            &mut zip_writer,
+            options,
+            pack_name,
+            mod_name,
+            override_ini,
+            true,
+        )?;
+
+        if wrote_override {
+            override_mod_count += 1;
+            debug!("  ↳ {} 的原版覆盖词条已拆出至 .override.cfg.disabled", mod_name);
+        }
+
+        if wrote_safe || wrote_override {
+            packed_count += 1;
+        }
         pb.set_message(format!("打包: {}", mod_name));
         pb.inc(1);
     }
 
     // toggle.py， 官网不允许传带可执行文件的 mod 包，作此变通
-    let zip_path = format!("{}/locale/zh-CN/toggle_py", pack_name);
+    let toggle_path = format!("{}/locale/zh-CN/toggle_py", pack_name);
     const TOGGLE_PY: &str = include_str!("templates/toggle.py");
-    zip_writer.start_file(&zip_path, options)?;
+    zip_writer.start_file(&toggle_path, options)?;
     zip_writer.write_all(TOGGLE_PY.as_bytes())?;
+
+    // control.lua 启动提示
+    let control_path = format!("{}/control.lua", pack_name);
+    const CONTROL_LUA: &str = include_str!("templates/control.lua");
+    zip_writer.start_file(&control_path, options)?;
+    zip_writer.write_all(CONTROL_LUA.as_bytes())?;
 
     // info.json
     let info_json = serde_json::json!({
@@ -161,7 +288,7 @@ pub fn pack_all_to_one_mod(
         "factorio_version": "2.1",
         "dependencies": ["base >= 2.1"],
         "author": "tanvec",
-            "description": format!("包含 {} 个模组的 AI 中文翻译。在模组官网上查看详细更新信息。手动解压可以按需求启用翻译，请查看 locale/zh-CN/ 下的 toggle_py 文件。默认禁用了所有会覆盖原版游戏词条的 mod 的翻译内容。联机时建议所有玩家都使用解压版本的 mod，并且手动运行 Python 脚本只启用对应翻译。详细信息请参见 github 链接 https://github.com/cyx2015s/auto-ai-cn", packed_count)
+        "description": format!("包含 {} 个模组的 AI 中文翻译。与原版词条冲突的翻译默认拆分为 .override.cfg.disabled 禁用，其余词条开箱即用。手动解压后可运行 locale/zh-CN/toggle_py（或使用 gavin-server）按 mod-list.json 精准启用对应模组及覆盖词条。详细信息请参见 github 链接 https://github.com/cyx2015s/auto-ai-cn", packed_count)
     });
     let info_path = format!("{}/info.json", pack_name);
     zip_writer.start_file(&info_path, options)?;
@@ -169,7 +296,10 @@ pub fn pack_all_to_one_mod(
 
     zip_writer.finish()?;
 
-    info!("翻译包已生成: {:?} ({} 个 mod)", output_path, packed_count);
+    info!(
+        "翻译包已生成: {:?} ({} 个 mod，其中 {} 个拆出原版覆盖文件)",
+        output_path, packed_count, override_mod_count
+    );
     Ok(output_path)
 }
 
@@ -442,27 +572,200 @@ fn is_protected(s: &str) -> bool {
     BASE_GAME_PROTECTED_SECTIONS.contains(&s)
 }
 
-/// 检查 INI 中是否有任何 key 出现在原版 key 集合中
-fn has_base_overlap(ini: &ini::Ini, base_keys: &std::collections::HashMap<String, String>) -> bool {
-    for (section, props) in ini.iter() {
-        if !is_protected(section.unwrap_or("")) {
-            continue;
-        }
-        let sec_prefix = section.map_or_else(String::new, |s| format!("{}.", s));
-        for (key, value) in props.iter() {
-            if let Some(base_value) = base_keys.get(&format!("{}{}", sec_prefix, key))
-                && base_value != value
-            {
-                log::debug!(
-                    "覆盖原版 key: {}{} ({} != {})",
-                    sec_prefix,
-                    key,
-                    value,
-                    base_value
-                );
-                return true;
-            }
+fn lookup_base_match<'a>(
+    section: Option<&str>,
+    key: &str,
+    base_keys: &'a HashMap<String, String>,
+) -> Option<(String, &'a String)> {
+    let sec_prefix = section.map_or_else(String::new, |s| format!("{}.", s));
+    let direct_key = format!("{}{}", sec_prefix, key);
+    if let Some(val) = base_keys.get(&direct_key) {
+        return Some((direct_key, val));
+    }
+
+    let fallback_secs: &[&str] = match section {
+        Some("item-name") => &["entity-name", "equipment-name"],
+        Some("item-description") => &["entity-description", "equipment-description"],
+        _ => return None,
+    };
+    for fb in fallback_secs {
+        let fb_key = format!("{}.{}", fb, key);
+        if let Some(val) = base_keys.get(&fb_key) {
+            return Some((fb_key, val));
         }
     }
-    false
+    None
+}
+
+/// 将模组译文拆分为 `(safe_ini, override_ini)`：
+/// - 若与原版译文相同，或模组英文原文与原版英文完全一致，直接省略；
+/// - 若确实覆写了原版词条（含 `item-name` / `item-description` 对 `entity` / `equipment` 的跨节回退劫持），
+///   放入 `override_ini`；
+/// - 其余模组独有词条保留在 `safe_ini`。
+pub fn split_ini_by_base_overlap(
+    merged_ini: &ini::Ini,
+    mod_en_ini: Option<&ini::Ini>,
+    base_keys: &HashMap<String, String>,
+    base_en_keys: Option<&HashMap<String, String>>,
+) -> (ini::Ini, ini::Ini) {
+    let mut safe_ini = ini::Ini::new();
+    let mut override_ini = ini::Ini::new();
+
+    for (section, props) in merged_ini.iter() {
+        let protected = is_protected(section.unwrap_or(""));
+        let sec_prefix = section.map_or_else(String::new, |s| format!("{}.", s));
+        for (key, value) in props.iter() {
+            if protected && let Some((matched_key, base_zh)) = lookup_base_match(section, key, base_keys) {
+                if base_zh == value {
+                    continue;
+                }
+                let direct_key = format!("{}{}", sec_prefix, key);
+                let mod_en_val = mod_en_ini
+                    .and_then(|en| en.section(section))
+                    .and_then(|p| p.get(key));
+                let base_en_val = base_en_keys.and_then(|m| {
+                    m.get(&direct_key)
+                        .or_else(|| m.get(&matched_key))
+                        .map(String::as_str)
+                });
+                if mod_en_val.is_some() && mod_en_val == base_en_val {
+                    continue;
+                }
+                debug!(
+                    "覆盖原版 key: {}{} ({} != {}, 匹配原版 {})",
+                    sec_prefix, key, value, base_zh, matched_key
+                );
+                override_ini.with_section(section).set(key, value);
+                continue;
+            }
+            safe_ini.with_section(section).set(key, value);
+        }
+    }
+
+    (safe_ini, override_ini)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_split_top_level_if_colliding() {
+        let mut ini = ini::Ini::new();
+        ini.with_general_section()
+            .set("companion-menu", "僚机控制面板")
+            .set("companion", "保镖僚机");
+        ini.with_section(Some("companion-menu"))
+            .set("title", "僚机控制面板");
+
+        let (top_opt, sec_opt) = split_top_level_if_colliding(ini);
+        let top = top_opt.expect("colliding top-level keys should be split out");
+        let sec = sec_opt.expect("sectioned keys should remain");
+
+        assert_eq!(
+            top.section(None::<String>).unwrap().get("companion-menu"),
+            Some("僚机控制面板")
+        );
+        assert_eq!(
+            top.section(None::<String>).unwrap().get("companion"),
+            Some("保镖僚机")
+        );
+        assert_eq!(top.sections().flatten().count(), 0);
+
+        assert!(sec.section(None::<String>).is_none_or(|p| p.is_empty()));
+        assert_eq!(
+            sec.section(Some("companion-menu")).unwrap().get("title"),
+            Some("僚机控制面板")
+        );
+    }
+
+    #[test]
+    fn test_split_top_level_no_collision() {
+        let mut ini = ini::Ini::new();
+        ini.with_general_section().set("top-only", "顶层键");
+        ini.with_section(Some("other-sec")).set("k", "v");
+
+        let (top_opt, sec_opt) = split_top_level_if_colliding(ini);
+        assert!(top_opt.is_none());
+        let sec = sec_opt.unwrap();
+        assert_eq!(
+            sec.section(None::<String>).unwrap().get("top-only"),
+            Some("顶层键")
+        );
+        assert_eq!(sec.section(Some("other-sec")).unwrap().get("k"), Some("v"));
+    }
+
+    #[test]
+    fn test_split_ini_by_base_overlap() {
+        let mut base_zh = HashMap::new();
+        base_zh.insert("entity-name.transport-belt".to_string(), "基础传送带".to_string());
+        base_zh.insert(
+            "entity-description.electromagnetic-plant".to_string(),
+            "电磁研究与应用的核心设施。".to_string(),
+        );
+        base_zh.insert("entity-name.beacon".to_string(), "插件效果分享塔".to_string());
+
+        let mut base_en = HashMap::new();
+        base_en.insert("entity-name.transport-belt".to_string(), "Transport belt".to_string());
+        base_en.insert(
+            "entity-description.electromagnetic-plant".to_string(),
+            "Central facility for electromagnetic research.".to_string(),
+        );
+        base_en.insert("entity-name.beacon".to_string(), "Beacon".to_string());
+
+        let mut mod_zh = ini::Ini::new();
+        mod_zh
+            .with_section(Some("item-name"))
+            // 跨节回退劫持，且英文已修改
+            .set("transport-belt", "标准传送带")
+            // 模组独有词条
+            .set("custom-widget", "自定义零件");
+        mod_zh
+            .with_section(Some("entity-description"))
+            // 复制原版英文，仅少个句号 -> 应被省略
+            .set("electromagnetic-plant", "电磁研究与应用的核心设施");
+        mod_zh
+            .with_section(Some("entity-name"))
+            // 实际修改原版含义 -> 进入 override
+            .set("beacon", "基础插件塔");
+
+        let mut mod_en = ini::Ini::new();
+        mod_en
+            .with_section(Some("item-name"))
+            .set("transport-belt", "Standard transport belt")
+            .set("custom-widget", "Custom widget");
+        mod_en
+            .with_section(Some("entity-description"))
+            .set(
+                "electromagnetic-plant",
+                "Central facility for electromagnetic research.",
+            );
+        mod_en
+            .with_section(Some("entity-name"))
+            .set("beacon", "Basic beacon");
+
+        let (safe, over) =
+            split_ini_by_base_overlap(&mod_zh, Some(&mod_en), &base_zh, Some(&base_en));
+
+        assert_eq!(
+            safe.section(Some("item-name")).unwrap().get("custom-widget"),
+            Some("自定义零件")
+        );
+        assert_eq!(
+            safe.section(Some("item-name")).unwrap().get("transport-belt"),
+            None
+        );
+        // verbatim vanilla copy is omitted from both
+        assert!(safe.section(Some("entity-description")).is_none());
+        assert!(over.section(Some("entity-description")).is_none());
+
+        assert_eq!(
+            over.section(Some("item-name")).unwrap().get("transport-belt"),
+            Some("标准传送带")
+        );
+        assert_eq!(
+            over.section(Some("entity-name")).unwrap().get("beacon"),
+            Some("基础插件塔")
+        );
+    }
 }

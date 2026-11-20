@@ -4,6 +4,9 @@ pub struct LocaleInfo {
     pub contents: indexmap::IndexMap<String, LangInfo>,
     /// 版本号
     pub version: String,
+    /// 从 info.json 提取的模组依赖列表（已去除版本约束和可选前缀，排除 base/core 与冲突项）
+    #[serde(default)]
+    pub dependencies: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -12,16 +15,85 @@ pub struct LangInfo {
     pub contents: indexmap::IndexMap<String, String>,
 }
 
+/// 将 key 中的未转义 `:` 转义为 `\:`，避免被 `rust-ini` 误解析为键值分隔符。
+fn escape_colons_in_key(key: &str) -> String {
+    let mut out = String::with_capacity(key.len());
+    let mut backslashes = 0usize;
+    for ch in key.chars() {
+        if ch == '\\' {
+            backslashes += 1;
+            out.push(ch);
+        } else if ch == ':' {
+            if backslashes.is_multiple_of(2) {
+                out.push('\\');
+            }
+            out.push(':');
+            backslashes = 0;
+        } else {
+            backslashes = 0;
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// 将 Mode 2（`section` + `entries`）直接提交的译文中的转义序列还原，
+/// 避免经过 `ini_to_str` 时被二次转义为 `\\n`。
+pub fn unescape_submitted_value(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                Some('\\') => out.push('\\'),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 pub fn str_to_ini(s: &str) -> anyhow::Result<ini::Ini> {
     let s = s.strip_prefix('\u{feff}').unwrap_or(s);
 
-    // 清洗：去掉每行前导空白，修复缩进的 # 注释被误认为 key 的问题
+    // 清洗：
+    // 1. 去掉每行前导空白，修复缩进的 # 注释被误认为 key 的问题
+    // 2. 转义 key 中的 `:`，避免 rust-ini 将 `:` 视作键值分隔符
+    // 3. 忽略既不是注释/section 也不包含 `=` 的游离行
     let cleaned: String = s
         .lines()
         .map(|line| {
             let trimmed = line.trim_start();
-            // 保留空行，非空行用 trim 后的版本
-            if trimmed.is_empty() { line } else { trimmed }
+            if trimmed.is_empty() {
+                String::new()
+            } else if trimmed.starts_with('#') || trimmed.starts_with(';') {
+                trimmed.to_string()
+            } else if trimmed.starts_with('[') {
+                if trimmed.trim_end().ends_with(']') && !trimmed.contains('=') {
+                    trimmed.to_string()
+                } else {
+                    String::new()
+                }
+            } else if let Some(eq_pos) = trimmed.find('=') {
+                let key_part = &trimmed[..eq_pos];
+                let val_part = &trimmed[eq_pos..];
+                if key_part.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!("{}{}", escape_colons_in_key(key_part), val_part)
+                }
+            } else {
+                String::new()
+            }
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -156,5 +228,48 @@ keyA=valueA
         let merged = merge_ini(&reference, &old, &diff);
         // Add assertions to verify the expected behavior of the merged result
         dbg!(&merged);
+    }
+
+    #[test]
+    fn test_colon_in_key_roundtrip() {
+        let input = "[ai-glossary]\nSpace Age: Hard Mode=太空时代：硬核模式\nArtisanal Reskins: Library=工匠重绘：核心库\n";
+        let ini = str_to_ini(input).unwrap();
+        let sec = ini.section(Some("ai-glossary")).unwrap();
+        assert_eq!(sec.get("Space Age: Hard Mode"), Some("太空时代：硬核模式"));
+        assert_eq!(sec.get("Artisanal Reskins: Library"), Some("工匠重绘：核心库"));
+
+        let out = ini_to_str(&ini).unwrap();
+        let reparsed = str_to_ini(&out).unwrap();
+        let reparsed_sec = reparsed.section(Some("ai-glossary")).unwrap();
+        assert_eq!(
+            reparsed_sec.get("Space Age: Hard Mode"),
+            Some("太空时代：硬核模式")
+        );
+        assert_eq!(
+            reparsed_sec.get("Artisanal Reskins: Library"),
+            Some("工匠重绘：核心库")
+        );
+    }
+
+    #[test]
+    fn test_stray_line_without_equals() {
+        let input = "[section]\nkey1=value1\nstray line with: colon and no equals\n[color=red]broken tag\nkey2=value2\n";
+        let ini = str_to_ini(input).unwrap();
+        let sec = ini.section(Some("section")).unwrap();
+        assert_eq!(sec.len(), 2);
+        assert_eq!(sec.get("key1"), Some("value1"));
+        assert_eq!(sec.get("key2"), Some("value2"));
+    }
+
+    #[test]
+    fn test_unescape_submitted_value() {
+        let raw = r"第一行\n第二行\t缩进\\反斜杠";
+        let unescaped = unescape_submitted_value(raw);
+        assert_eq!(unescaped, "第一行\n第二行\t缩进\\反斜杠");
+
+        let mut ini = ini::Ini::new();
+        ini.with_section(Some("sec")).set("k", unescaped);
+        let serialized = ini_to_str(&ini).unwrap();
+        assert_eq!(serialized, "[sec]\nk=第一行\\n第二行\\t缩进\\\\反斜杠\n");
     }
 }

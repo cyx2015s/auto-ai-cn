@@ -21,13 +21,14 @@
 //!
 //! ## 流程概述
 //!
-//! 1. 获取自上次运行以来更新的所有 mod
+//! 1. 获取自上次运行以来更新的所有 mod，并合并 `.pipeline_state.failed_mods` 中的失败项
 //! 2. 对于每个 mod：
 //!    - 获取 mod 的所有翻译文件（下载 zip → 解压 → 收集 `locale/` 下的 `.cfg` 文件）
 //!    - 如果本地有缓存，则获取差异
 //!    - 将预先构筑好的提示词送入 LLM
 //!    - 将 LLM 的输出与本地缓存进行合并，生成新的翻译
 //!    - 保存新的翻译文件到本地缓存
+//! 3. 成功项移出失败队列，错误项留待下次自动运行重试；同名 mod 优先处理增量中的新版本
 //!
 //! ## 已知限制
 //!
@@ -53,7 +54,7 @@
 //! ```
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::{Cursor, Read},
     path::{Path, PathBuf},
     time::Duration,
@@ -96,22 +97,49 @@ pub fn set_llm_verbose(enabled: bool) {
 pub type ModKey = (String, String);
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 管道状态（上次运行时间）
+// 管道状态（上次运行时间和待重试 mod）
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// 持久化的管道状态，记录上次运行时间
+/// 持久化的管道状态，失败只记录名称，重试时重新获取最新版本。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineState {
     /// 上次运行时间（UTC）
     pub last_run: DateTime<Utc>,
+    /// 因错误未能完成的 mod；兼容只有 last_run 的旧状态文件。
+    #[serde(default)]
+    pub failed_mods: BTreeSet<String>,
 }
 
 impl Default for PipelineState {
     fn default() -> Self {
         Self {
             last_run: DateTime::UNIX_EPOCH,
+            failed_mods: BTreeSet::new(),
         }
     }
+}
+
+impl PipelineState {
+    fn record_mod_result(&mut self, name: &str, succeeded: bool) {
+        if succeeded {
+            self.failed_mods.remove(name);
+        } else {
+            self.failed_mods.insert(name.to_owned());
+        }
+    }
+}
+
+/// 增量结果优先，重试只补充尚未出现的名称，避免下载同一 mod 的旧版本。
+fn merge_mod_candidates(
+    updated: Vec<factorio_api::ResultEntry>,
+    retries: Vec<factorio_api::ResultEntry>,
+) -> Vec<factorio_api::ResultEntry> {
+    let mut seen = BTreeSet::new();
+    updated
+        .into_iter()
+        .chain(retries)
+        .filter(|entry| seen.insert(entry.name.clone()))
+        .collect()
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -183,6 +211,57 @@ impl FlowConfig {
 ///
 /// 返回 `LocaleInfo`，其中 key 为语言代码（如 `"zh-CN"`, `"en"`），
 /// value 为该语言下所有 `.cfg` 文件的内容。
+/// 从 `info.json` 的 `dependencies` 字段提取依赖模组名列表。
+///
+/// 忽略冲突依赖（`!` 开头）以及 `base` / `core` 官方基础模块，
+/// 去除可选/前置修饰符（`(?)`、`?`、`~`、`+`）和版本约束（`>= 1.0.0` 等）。
+pub fn parse_mod_dependencies(info: &serde_json::Value) -> Vec<String> {
+    let raw_deps: Vec<&str> = match info.get("dependencies") {
+        Some(serde_json::Value::Array(arr)) => arr.iter().filter_map(|v| v.as_str()).collect(),
+        Some(serde_json::Value::String(s)) => vec![s.as_str()],
+        _ => Vec::new(),
+    };
+
+    let mut deps = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for raw in raw_deps {
+        let mut s = raw.trim();
+        if s.is_empty() || s.starts_with('!') {
+            continue;
+        }
+        loop {
+            let trimmed = s.trim_start();
+            if let Some(rest) = trimmed.strip_prefix("(?)") {
+                s = rest;
+            } else if let Some(rest) = trimmed
+                .strip_prefix('?')
+                .or_else(|| trimmed.strip_prefix('~'))
+                .or_else(|| trimmed.strip_prefix('+'))
+            {
+                s = rest;
+            } else {
+                s = trimmed;
+                break;
+            }
+        }
+        let mod_name = s
+            .split(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '='))
+            .next()
+            .unwrap_or("")
+            .trim();
+
+        if mod_name.is_empty() || mod_name == "base" || mod_name == "core" {
+            continue;
+        }
+        if seen.insert(mod_name.to_string()) {
+            deps.push(mod_name.to_string());
+        }
+    }
+
+    deps
+}
+
 pub fn extract_locale_from_zip(zip_bytes: &[u8]) -> anyhow::Result<LocaleInfo> {
     let cursor = Cursor::new(zip_bytes);
     let mut archive = zip::ZipArchive::new(cursor).context("无法打开 zip 文件")?;
@@ -190,6 +269,7 @@ pub fn extract_locale_from_zip(zip_bytes: &[u8]) -> anyhow::Result<LocaleInfo> {
     let mut locale_info = LocaleInfo {
         contents: indexmap::IndexMap::new(),
         version: String::new(),
+        dependencies: Vec::new(),
     };
 
     for i in 0..archive.len() {
@@ -264,6 +344,7 @@ pub fn extract_locale_from_zip(zip_bytes: &[u8]) -> anyhow::Result<LocaleInfo> {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                locale_info.dependencies = parse_mod_dependencies(&info);
             }
         }
     }
@@ -351,26 +432,27 @@ pub fn extract_base_glossary(game_data_path: &Path) -> anyhow::Result<ini::Ini> 
     Ok(glossary)
 }
 
-/// 提取原版游戏中所有官方 mod 的 locale key 集合（用于检测 mod 翻译是否覆盖原版）。
-pub fn extract_base_all(
+const OFFICIAL_MODS: &[&str] = &[
+    "core",
+    "base",
+    "quality",
+    "elevated-rails",
+    "space-age",
+    "recycler",
+];
+
+fn extract_base_all_for_lang(
     game_data_path: &Path,
+    lang: &str,
 ) -> anyhow::Result<std::collections::HashMap<String, String>> {
-    const OFFICIAL_MODS: &[&str] = &[
-        "core",
-        "base",
-        "quality",
-        "elevated-rails",
-        "space-age",
-        "recycler",
-    ];
     let mut keys = std::collections::HashMap::new();
     for mod_name in OFFICIAL_MODS {
-        let en_dir = game_data_path.join(mod_name).join("locale").join("zh-CN");
-        if !en_dir.exists() {
+        let lang_dir = game_data_path.join(mod_name).join("locale").join(lang);
+        if !lang_dir.exists() {
             continue;
         }
-        for entry in std::fs::read_dir(&en_dir)
-            .with_context(|| format!("无法读取 {} 的中文 locale: {:?}", mod_name, en_dir))?
+        for entry in std::fs::read_dir(&lang_dir)
+            .with_context(|| format!("无法读取 {} 的 {} locale: {:?}", mod_name, lang, lang_dir))?
         {
             let entry = entry?;
             let path = entry.path();
@@ -388,6 +470,149 @@ pub fn extract_base_all(
         }
     }
     Ok(keys)
+}
+
+/// 提取原版游戏中所有官方 mod 的 zh-CN locale key 集合（用于检测 mod 翻译是否覆盖原版）。
+pub fn extract_base_all(
+    game_data_path: &Path,
+) -> anyhow::Result<std::collections::HashMap<String, String>> {
+    extract_base_all_for_lang(game_data_path, "zh-CN")
+}
+
+/// 提取原版游戏中所有官方 mod 的 en locale key 集合（用于判断 mod 是否原封不动复制了原版英文）。
+pub fn extract_base_all_en(
+    game_data_path: &Path,
+) -> anyhow::Result<std::collections::HashMap<String, String>> {
+    extract_base_all_for_lang(game_data_path, "en")
+}
+
+/// 从缓存目录按 BFS 解析当前 mod 的依赖链（最多 3 层），末尾追加 `mod_name` 自身。
+pub fn resolve_mod_dependency_chain(
+    mod_name: &str,
+    direct_deps: &[String],
+    cache_dir: &Path,
+) -> Vec<String> {
+    #[derive(Deserialize)]
+    struct CachedDeps {
+        #[serde(default)]
+        dependencies: Vec<String>,
+    }
+
+    let mut visited = BTreeSet::new();
+    let mut chain = Vec::new();
+    let mut queue = std::collections::VecDeque::new();
+
+    for dep in direct_deps {
+        if dep != mod_name && !dep.is_empty() {
+            queue.push_back((dep.clone(), 1usize));
+        }
+    }
+
+    while let Some((dep, depth)) = queue.pop_front() {
+        if dep == mod_name || !visited.insert(dep.clone()) {
+            continue;
+        }
+        chain.push(dep.clone());
+
+        if depth < 3 {
+            let dep_cache = cache_dir.join(format!("{}.json", dep));
+            if dep_cache.exists()
+                && let Ok(content) = std::fs::read_to_string(&dep_cache)
+                && let Ok(parsed) = serde_json::from_str::<CachedDeps>(&content)
+            {
+                for sub_dep in parsed.dependencies {
+                    if !sub_dep.is_empty() && sub_dep != mod_name && !visited.contains(&sub_dep) {
+                        queue.push_back((sub_dep, depth + 1));
+                    }
+                }
+            }
+        }
+    }
+
+    chain.push(mod_name.to_string());
+    chain
+}
+
+/// 按依赖链与待翻译原文构建大小写不敏感的上下文术语表：
+/// 1. 遗留全局节（`None` / `ai-glossary`）：仅注入原文中实际出现过的条目（长度 >= 2）
+/// 2. 原版官方对照表（`base_locale`）：仅注入原文中实际出现过的条目
+/// 3. 当前模组及其依赖链（`dep_chain`）：条件载入对应 `[<mod_name>]` 节中的所有有效术语（最高优先级）
+pub fn build_mod_glossary(
+    base_locale: &ini::Ini,
+    ai_glossary: &ini::Ini,
+    dep_chain: &[String],
+    file_diffs: &BTreeMap<String, ini::Ini>,
+) -> ini::Ini {
+    let mut diff_text = String::new();
+    for diff_ini in file_diffs.values() {
+        for (_sec, props) in diff_ini.iter() {
+            for (_k, v) in props.iter() {
+                diff_text.push_str(v);
+                diff_text.push('\n');
+            }
+        }
+    }
+    let diff_text_lower = diff_text.to_lowercase();
+
+    let mut entries: indexmap::IndexMap<String, (String, String)> = indexmap::IndexMap::new();
+
+    // 1. 遗留全局术语（仅按原文命中注入，避免无关模组词条污染上下文）
+    for legacy_sec in [None, Some("ai-glossary")] {
+        if let Some(props) = ai_glossary.section(legacy_sec) {
+            for (k, v) in props.iter() {
+                let k_trimmed = k.trim();
+                let v_trimmed = v.trim();
+                if k_trimmed.len() >= 2
+                    && !v_trimmed.is_empty()
+                    && !k_trimmed.eq_ignore_ascii_case(v_trimmed)
+                {
+                    let lower = k_trimmed.to_lowercase();
+                    if diff_text_lower.contains(&lower) {
+                        entries.insert(lower, (k_trimmed.to_string(), v_trimmed.to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. 原版官方术语对照表（仅按原文命中注入）
+    for (_sec, props) in base_locale.iter() {
+        for (k, v) in props.iter() {
+            let k_trimmed = k.trim();
+            let v_trimmed = v.trim();
+            if !k_trimmed.is_empty() && !v_trimmed.is_empty() {
+                let lower = k_trimmed.to_lowercase();
+                if diff_text_lower.contains(&lower) {
+                    entries.insert(lower, (k_trimmed.to_string(), v_trimmed.to_string()));
+                }
+            }
+        }
+    }
+
+    // 3. 依赖链与当前模组专有术语（最高优先级）
+    for dep in dep_chain {
+        if let Some(props) = ai_glossary.section(Some(dep.as_str())) {
+            for (k, v) in props.iter() {
+                let k_trimmed = k.trim();
+                let v_trimmed = v.trim();
+                if !k_trimmed.is_empty()
+                    && !v_trimmed.is_empty()
+                    && !k_trimmed.eq_ignore_ascii_case(v_trimmed)
+                {
+                    entries.insert(
+                        k_trimmed.to_lowercase(),
+                        (k_trimmed.to_string(), v_trimmed.to_string()),
+                    );
+                }
+            }
+        }
+    }
+
+    let mut out = ini::Ini::new();
+    for (term, translation) in entries.values() {
+        out.with_general_section().set(term, translation);
+    }
+    out
 }
 
 #[test]
@@ -615,7 +840,7 @@ ghost表示没有完成建筑的建筑时，翻译为「虚影」。
 - 使用 submit_translation 函数，传入 file_name + ini_content 一次性提交整个文件的简体中文翻译
 - ini_content 应为标准 INI 格式文本，保留原文的 section 结构和 key，只将值翻译为中文存在 value 中
 - 如果文件过大，可以按 section 分批提交（传入 section + entries），单个 section 也可以划分为多次函数调用提交
-- 遇到虚构的名称，请额外使用 submit_glossary 函数提交其翻译，格式为 term（英文） + translation（中文），可选 reason 字段说明判断依据"#;
+- 仅在遇到模组独创的虚构名称或专属概念时，使用 submit_glossary 函数提交其翻译（格式为 term + translation，可选 reason）；不要提交原版已有词条、未翻译的英文原词或依赖具体语境的常见普通英文词汇（如 angel、hauler、worker、mail 等）"#;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Step 3: 构建 Function Calling 的工具定义
@@ -673,7 +898,7 @@ fn make_translation_tools() -> Vec<ToolObject> {
         "properties": {
             "term": {
                 "type": "string",
-                "description": "英文专有名词/术语"
+                "description": "英文专有名词/虚构术语"
             },
             "translation": {
                 "type": "string",
@@ -703,7 +928,7 @@ fn make_translation_tools() -> Vec<ToolObject> {
             tool_type: ToolType::Function,
             function: Function {
                 name: "submit_glossary".to_string(),
-                description: "提交跨模组专有名词的翻译，用于保持虚构物品/实体/概念等翻译的一致性。".to_string(),
+                description: "按当前模组及其下游依赖作用域提交专有名词/虚构概念的翻译。仅用于模组独创的虚构名称（星球、独特派系/科技/装备名），不要提交随上下文变化的普通英文词汇或未翻译的原词。".to_string(),
                 parameters: glossary_parameters,
             },
         },
@@ -717,9 +942,9 @@ fn make_translation_tools() -> Vec<ToolObject> {
 /// 构建用户提示词内容。
 ///
 /// 包含：
-/// 1. 原版游戏中英文对照表（作为参考）
-/// 2. 需要翻译的内容（按文件分开的 INI 差异）
-/// 3. 如果提供了上次的翻译文件，附上参考
+/// 1. 术语对照表（原版及依赖模组专有术语，作为参考）
+/// 2. 如果提供了上次的翻译文件，附上仅 zh-CN 且限长的风格参考
+/// 3. 需要翻译的内容（按文件分开的 INI 差异）
 pub fn build_user_prompt(
     base_locale: &ini::Ini,
     file_diffs: &BTreeMap<String, ini::Ini>,
@@ -727,30 +952,47 @@ pub fn build_user_prompt(
 ) -> anyhow::Result<String> {
     let mut prompt = String::new();
 
-    // 原版对照表
+    // 术语对照表
     if !base_locale.is_empty() {
-        prompt.push_str("## 原版游戏术语对照参考\n\n");
-        prompt.push_str("以下为原版游戏中的常见术语翻译，请保持翻译一致性：\n\n");
+        prompt.push_str("## 术语对照参考\n\n");
+        prompt.push_str("以下为本次任务涉及的常见与专有术语翻译，请保持翻译一致性：\n\n");
         prompt.push_str("```ini\n");
         prompt.push_str(&translation::ini_to_str(base_locale)?);
         prompt.push_str("```\n\n");
     }
 
-    // 上次的翻译文件（作为风格参考）
+    // 上次的 zh-CN 翻译（仅作风格参考，最多保留 100 行非空内容）
     if let Some(prev) = previous_translations
-        && !prev.contents.is_empty()
+        && let Some(zh_info) = prev.contents.get(TARGET_LANG)
+        && !zh_info.contents.is_empty()
     {
-        prompt.push_str("## 该模组之前的翻译（仅供参考风格）\n\n");
-        prompt.push_str("```ini\n");
-        for (lang_code, lang_info) in &prev.contents {
-            prompt.push_str(&format!("; --- 语言: {} ---\n", lang_code));
-            for (file_name, content) in &lang_info.contents {
-                prompt.push_str(&format!("; 文件: {}\n", file_name));
-                prompt.push_str(content);
-                prompt.push('\n');
+        const MAX_PREV_LINES: usize = 100;
+        let mut snippet = String::new();
+        let mut line_count = 0usize;
+        for (file_name, content) in &zh_info.contents {
+            if line_count >= MAX_PREV_LINES {
+                break;
+            }
+            let non_empty: Vec<&str> = content
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .take(MAX_PREV_LINES - line_count)
+                .collect();
+            if !non_empty.is_empty() {
+                snippet.push_str(&format!("; 文件: {}\n", file_name));
+                for line in &non_empty {
+                    snippet.push_str(line);
+                    snippet.push('\n');
+                }
+                line_count += non_empty.len();
             }
         }
-        prompt.push_str("```\n\n");
+        if !snippet.is_empty() {
+            prompt.push_str("## 该模组之前的中文翻译（仅供参考风格，节选）\n\n");
+            prompt.push_str("```ini\n");
+            prompt.push_str(&snippet);
+            prompt.push_str("```\n\n");
+        }
     }
 
     // 当前翻译任务 — 按文件分开展示差异 INI
@@ -940,32 +1182,122 @@ async fn fetch_llm_response(
     Ok((assistant_msg, finish_reason))
 }
 
+fn contains_cjk(s: &str) -> bool {
+    s.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c))
+}
+
+fn resolve_submitted_file_name(submitted: &str, expected_files: &[String]) -> String {
+    if expected_files.iter().any(|f| f == submitted) {
+        return submitted.to_string();
+    }
+    if expected_files.len() == 1 {
+        return expected_files[0].clone();
+    }
+    if let Some(matched) = expected_files
+        .iter()
+        .find(|f| submitted.ends_with(f.as_str()) || f.eq_ignore_ascii_case(submitted))
+    {
+        return matched.clone();
+    }
+    submitted.to_string()
+}
+
+/// 将多文件待翻译条目按最大条目数切分为若干批次，防止超大文件在单次工具调用中触发输出上限截断。
+pub fn split_file_diffs_into_batches(
+    file_diffs: &BTreeMap<String, ini::Ini>,
+    max_entries: usize,
+) -> Vec<BTreeMap<String, ini::Ini>> {
+    let limit = max_entries.max(1);
+    let mut batches = Vec::new();
+    let mut current_batch: BTreeMap<String, ini::Ini> = BTreeMap::new();
+    let mut current_count = 0usize;
+
+    for (file_name, diff_ini) in file_diffs {
+        for (sec, props) in diff_ini.iter() {
+            for (k, v) in props.iter() {
+                if current_count >= limit {
+                    batches.push(std::mem::take(&mut current_batch));
+                    current_count = 0;
+                }
+                current_batch
+                    .entry(file_name.clone())
+                    .or_default()
+                    .with_section(sec)
+                    .set(k, v);
+                current_count += 1;
+            }
+        }
+    }
+
+    if !current_batch.is_empty() {
+        batches.push(current_batch);
+    }
+    batches
+}
+
+fn normalize_merged_zh_ini(ini: &mut ini::Ini) {
+    if ini
+        .section(None::<String>)
+        .and_then(|s| s.get("locale-identifier"))
+        == Some("en")
+    {
+        ini.with_general_section()
+            .set("locale-identifier", TARGET_LANG);
+    }
+}
+
+fn merge_with_file_map(
+    file_name: &str,
+    reference_ini: &ini::Ini,
+    old_ini: &ini::Ini,
+    llm_by_file: &BTreeMap<String, ini::Ini>,
+    known_files: &BTreeSet<String>,
+) -> ini::Ini {
+    let mut merged = if let Some(exact) = llm_by_file.get(file_name) {
+        translation::merge_ini(reference_ini, old_ini, exact)
+    } else {
+        translation::merge_ini(reference_ini, old_ini, &ini::Ini::new())
+    };
+
+    // 若 LLM 偶发写错了文件名（不在 known_files 内），作为兜底补入缺失键
+    for (fname, fallback_ini) in llm_by_file {
+        if fname != file_name && !known_files.contains(fname) {
+            merged = translation::merge_ini(reference_ini, &merged, fallback_ini);
+        }
+    }
+    normalize_merged_zh_ini(&mut merged);
+    merged
+}
+
 /// 调用 LLM 获取翻译。
 ///
 /// 使用 function calling 机制，LLM 通过多次调用 `submit_translation`
 /// 分批提交翻译结果，也可通过 `submit_glossary` 提交专有名词翻译。
 ///
-/// `glossary` 会被原地更新（AI 提交的术语追加到对照表）。
+/// `glossary` 会被原地更新（AI 提交的术语按 `[mod_name]` 分节写入）。
 pub async fn call_llm_for_translation(
     client: &deepseek_api::DeepSeekClient,
+    mod_name: &str,
+    expected_files: &[String],
     system_prompt: &str,
     user_prompt: &str,
     glossary: &mut ini::Ini,
-) -> anyhow::Result<ini::Ini> {
+) -> anyhow::Result<BTreeMap<String, ini::Ini>> {
     let tools = make_translation_tools();
-    let mut result_ini = ini::Ini::new();
+    let mut result_by_file: BTreeMap<String, ini::Ini> = BTreeMap::new();
+    let mut warned_no_chinese: BTreeSet<String> = BTreeSet::new();
     let mut loop_count = 0;
+    let mut parse_error_streak = 0usize;
     const MAX_LOOPS: usize = 256;
 
-    // 将系统提示词合并到用户消息的开头
-    let full_user_prompt = format!("[系统指令]\n{}\n\n---\n\n{}", system_prompt, user_prompt);
-
-    let mut messages: Vec<MessageRequest> = vec![MessageRequest::user(&full_user_prompt)];
+    let mut messages: Vec<MessageRequest> = vec![
+        MessageRequest::sys(system_prompt),
+        MessageRequest::user(user_prompt),
+    ];
 
     while loop_count < MAX_LOOPS {
         loop_count += 1;
 
-        // verbose 时流式获取并实时打印，否则一次性获取
         let (assistant_msg, finish_reason) = fetch_llm_response(
             client,
             &messages,
@@ -974,7 +1306,6 @@ pub async fn call_llm_for_translation(
         )
         .await?;
 
-        // 无论 finish_reason 是什么，只要 assistant 消息带 tool_calls 就处理
         let msg = &assistant_msg;
 
         if let Some(ref tool_calls) = msg.tool_calls
@@ -982,223 +1313,304 @@ pub async fn call_llm_for_translation(
         {
             messages.push(MessageRequest::Assistant(msg.clone()));
 
-            {
-                let mut has_valid_call = false;
+            let mut has_valid_call = false;
+            let mut needs_retry = false;
 
-                for tool_call in tool_calls {
-                    let fn_name = tool_call.function.name.as_str();
-                    match fn_name {
-                        "submit_translation" => {
-                            // 解析翻译数据
-                            match serde_json::from_str::<SubmittedTranslation>(
-                                &tool_call.function.arguments,
-                            ) {
-                                Ok(submitted) => {
-                                    let mut merged_count = 0usize;
+            for tool_call in tool_calls {
+                let fn_name = tool_call.function.name.as_str();
+                match fn_name {
+                    "submit_translation" => {
+                        match serde_json::from_str::<SubmittedTranslation>(
+                            &tool_call.function.arguments,
+                        ) {
+                            Ok(submitted) => {
+                                let target_file = resolve_submitted_file_name(
+                                    &submitted.file_name,
+                                    expected_files,
+                                );
 
-                                    // 模式 1：整文件 INI 文本提交
-                                    if let Some(ref ini_content) = submitted.ini_content {
-                                        let ini = translation::str_to_ini(ini_content)?;
-                                        let mut has_chinese_count = 0;
-                                        for (sec, props) in ini.iter() {
-                                            for (k, v) in props.iter() {
-                                                if v.chars()
-                                                    .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c))
-                                                {
-                                                    has_chinese_count += 1;
+                                // 模式 1：整文件 INI 文本提交
+                                if let Some(ref ini_content) = submitted.ini_content {
+                                    match translation::str_to_ini(ini_content) {
+                                        Ok(ini) => {
+                                            let mut merged_count = 0usize;
+                                            let mut has_chinese_count = 0usize;
+                                            for (_sec, props) in ini.iter() {
+                                                for (_k, v) in props.iter() {
+                                                    if contains_cjk(v) {
+                                                        has_chinese_count += 1;
+                                                    }
+                                                    merged_count += 1;
                                                 }
-                                                result_ini.with_section(sec).set(k, v);
-                                                merged_count += 1;
+                                            }
+                                            debug!(
+                                                "收到整文件翻译: file={}, sections={}, entries={}, chinese_characters={}",
+                                                target_file,
+                                                ini.iter().count(),
+                                                merged_count,
+                                                has_chinese_count
+                                            );
+
+                                            has_valid_call = true;
+                                            let warn_key = format!("{}:*", target_file);
+                                            if has_chinese_count == 0
+                                                && merged_count > 0
+                                                && warned_no_chinese.insert(warn_key)
+                                            {
+                                                warn!(
+                                                    "整文件翻译中没有检测到中文字符: file={}, entries={:?}",
+                                                    target_file, submitted.ini_content
+                                                );
+                                                warn!(
+                                                    "额外参数情况：{:?}, {:?}",
+                                                    submitted.section, submitted.entries
+                                                );
+                                                needs_retry = true;
+                                                messages.push(MessageRequest::Tool(
+                                                    ToolMessageRequest::new(
+                                                        &format!(
+                                                            "警告：整文件翻译中没有检测到中文字符，暂未写入。请将英文翻译为简体中文（若原文确为纯符号/代码无需翻译，请再次提交以确认）: {} (共 {} 条)",
+                                                            target_file, merged_count
+                                                        ),
+                                                        &tool_call.id,
+                                                    ),
+                                                ));
+                                            } else {
+                                                let file_ini = result_by_file
+                                                    .entry(target_file.clone())
+                                                    .or_default();
+                                                for (sec, props) in ini.iter() {
+                                                    for (k, v) in props.iter() {
+                                                        file_ini.with_section(sec).set(k, v);
+                                                    }
+                                                }
+                                                messages.push(MessageRequest::Tool(
+                                                    ToolMessageRequest::new(
+                                                        &format!(
+                                                            "已收到 {} 的整文件翻译（{} 条）",
+                                                            target_file, merged_count
+                                                        ),
+                                                        &tool_call.id,
+                                                    ),
+                                                ));
                                             }
                                         }
-                                        debug!(
-                                            "收到整文件翻译: file={}, sections={}, entries={}, chinese_characters={}",
-                                            submitted.file_name,
-                                            ini.iter().count(),
-                                            merged_count,
-                                            has_chinese_count
-                                        );
-
-                                        has_valid_call = true;
-                                        if has_chinese_count == 0 && merged_count > 0 {
-                                            warn!(
-                                                "整文件翻译中没有检测到中文字符: file={}, entries={:?}",
-                                                submitted.file_name, submitted.ini_content
-                                            );
-                                            warn!(
-                                                "额外参数情况：{:?}, {:?}",
-                                                submitted.section, submitted.entries
-                                            );
-                                            messages.push(MessageRequest::Tool(ToolMessageRequest::new(
-                                                &format!(
-                                                    "警告：整文件翻译中没有检测到中文字符，请检查翻译内容是否正确: {} (已收到 {} 条)",
-                                                    submitted.file_name, merged_count
-                                                ),
-                                                &tool_call.id,
-                                            )));
-                                        } else {
+                                        Err(e) => {
+                                            warn!("解析整文件 INI 失败: file={}, err={}", target_file, e);
+                                            needs_retry = true;
                                             messages.push(MessageRequest::Tool(
                                                 ToolMessageRequest::new(
-                                                    &format!(
-                                                        "已收到 {} 的整文件翻译（{} 条）",
-                                                        submitted.file_name, merged_count
-                                                    ),
+                                                    &format!("INI 解析失败: {}，请检查格式后重新提交", e),
                                                     &tool_call.id,
                                                 ),
                                             ));
                                         }
                                     }
-                                    // 模式 2：按 section 提交
-                                    else if let (Some(section), Some(entries)) =
-                                        (&submitted.section, &submitted.entries)
-                                    {
-                                        let mut has_chinese_count = 0;
-                                        for entry in entries {
-                                            has_chinese_count += entry
-                                                .translation
-                                                .chars()
-                                                .any(|c| c > '\u{4e00}' && c <= '\u{9fff}')
-                                                as usize;
-                                            result_ini
-                                                .with_section(Some(section.as_str()))
-                                                .set(&entry.key, &entry.translation);
-                                            merged_count += 1;
+                                }
+                                // 模式 2：按 section 提交
+                                else if let (Some(section), Some(entries)) =
+                                    (&submitted.section, &submitted.entries)
+                                {
+                                    let mut merged_count = 0usize;
+                                    let mut has_chinese_count = 0usize;
+                                    for entry in entries {
+                                        if contains_cjk(&entry.translation) {
+                                            has_chinese_count += 1;
                                         }
-                                        debug!(
-                                            "收到翻译: file={}, section={}, entries={}",
-                                            submitted.file_name, section, merged_count
+                                        merged_count += 1;
+                                    }
+                                    debug!(
+                                        "收到翻译: file={}, section={}, entries={}",
+                                        target_file, section, merged_count
+                                    );
+                                    has_valid_call = true;
+                                    let warn_key = format!("{}:{}", target_file, section);
+                                    if has_chinese_count == 0
+                                        && merged_count > 0
+                                        && warned_no_chinese.insert(warn_key)
+                                    {
+                                        warn!(
+                                            "翻译中没有检测到中文字符: file={}, section={}, entries={:?}",
+                                            target_file, section, entries
                                         );
-                                        has_valid_call = true;
-                                        if has_chinese_count == 0 && merged_count > 0 {
-                                            warn!(
-                                                "翻译中没有检测到中文字符: file={}, section={}, entries={:?}",
-                                                submitted.file_name, section, entries
-                                            );
-                                            messages.push(MessageRequest::Tool(ToolMessageRequest::new(
+                                        needs_retry = true;
+                                        messages.push(MessageRequest::Tool(
+                                            ToolMessageRequest::new(
                                                 &format!(
-                                                    "警告：翻译中没有检测到中文字符，请检查翻译内容是否正确: {} 下 {} 条",
+                                                    "警告：翻译中没有检测到中文字符，暂未写入。请检查并翻译为简体中文（若原文确为纯符号/代码无需翻译，请再次提交以确认）: {} 下 {} 条",
                                                     section, merged_count
                                                 ),
                                                 &tool_call.id,
-                                            )));
+                                            ),
+                                        ));
+                                    } else {
+                                        let sec_opt = if section.is_empty() {
+                                            None
                                         } else {
+                                            Some(section.as_str())
+                                        };
+                                        let file_ini =
+                                            result_by_file.entry(target_file.clone()).or_default();
+                                        for entry in entries {
+                                            let unescaped = translation::unescape_submitted_value(
+                                                &entry.translation,
+                                            );
+                                            file_ini
+                                                .with_section(sec_opt)
+                                                .set(&entry.key, unescaped);
+                                        }
+                                        messages.push(MessageRequest::Tool(
+                                            ToolMessageRequest::new(
+                                                &format!(
+                                                    "已收到 {} 的 {} 下 {} 条翻译",
+                                                    target_file, section, merged_count
+                                                ),
+                                                &tool_call.id,
+                                            ),
+                                        ));
+                                    }
+                                } else {
+                                    warn!(
+                                        "翻译提交格式无效: file={}, 缺少 ini_content 或 (section+entries)",
+                                        submitted.file_name
+                                    );
+                                    needs_retry = true;
+                                    messages.push(MessageRequest::Tool(ToolMessageRequest::new(
+                                        "格式无效：请提供 ini_content（整文件）或 section+entries（按 section）",
+                                        &tool_call.id,
+                                    )));
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "解析翻译数据失败: {} — 原始参数: {}",
+                                    e, tool_call.function.arguments
+                                );
+                                needs_retry = true;
+                                messages.push(MessageRequest::Tool(ToolMessageRequest::new(
+                                    &format!("解析失败: {}", e),
+                                    &tool_call.id,
+                                )));
+                            }
+                        }
+                    }
+                    "submit_glossary" => {
+                        match serde_json::from_str::<SubmittedGlossaryEntry>(
+                            &tool_call.function.arguments,
+                        ) {
+                            Ok(entry) => {
+                                let term = entry.term.trim();
+                                let trans = entry.translation.trim();
+                                debug!(
+                                    "AI 提交术语 [{}]: {} → {} ({})",
+                                    mod_name,
+                                    term,
+                                    trans,
+                                    entry.reason.as_deref().unwrap_or("无理由")
+                                );
+                                has_valid_call = true;
+                                if term.is_empty()
+                                    || trans.is_empty()
+                                    || term.eq_ignore_ascii_case(trans)
+                                {
+                                    messages.push(MessageRequest::Tool(ToolMessageRequest::new(
+                                        "术语无需记录（与原文相同或为空）",
+                                        &tool_call.id,
+                                    )));
+                                } else {
+                                    let existing =
+                                        glossary.section(Some(mod_name)).and_then(|props| {
+                                            props
+                                                .iter()
+                                                .find(|(k, _)| k.eq_ignore_ascii_case(term))
+                                                .map(|(k, v)| (k.to_string(), v.to_string()))
+                                        });
+                                    if let Some((existing_key, old)) = existing {
+                                        if old == trans {
                                             messages.push(MessageRequest::Tool(
                                                 ToolMessageRequest::new(
                                                     &format!(
-                                                        "已收到 {} 的 {} 下 {} 条翻译",
-                                                        submitted.file_name, section, merged_count
+                                                        "术语已存在: {} → {}",
+                                                        existing_key, old
+                                                    ),
+                                                    &tool_call.id,
+                                                ),
+                                            ));
+                                        } else {
+                                            debug!(
+                                                "保留模组 [{}] 既有术语: {} → {} (忽略新建议: {})",
+                                                mod_name, existing_key, old, trans
+                                            );
+                                            messages.push(MessageRequest::Tool(
+                                                ToolMessageRequest::new(
+                                                    &format!(
+                                                        "已保留当前模组既有术语 {}: {}",
+                                                        existing_key, old
                                                     ),
                                                     &tool_call.id,
                                                 ),
                                             ));
                                         }
                                     } else {
-                                        // 格式无效：没有 ini_content 也没有 section+entries
-                                        warn!(
-                                            "翻译提交格式无效: file={}, 缺少 ini_content 或 (section+entries)",
-                                            submitted.file_name
-                                        );
-                                        messages.push(MessageRequest::Tool(ToolMessageRequest::new(
-                                        "格式无效：请提供 ini_content（整文件）或 section+entries（按 section）",
-                                        &tool_call.id,
-                                    )));
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        "解析翻译数据失败: {} — 原始参数: {}",
-                                        e, tool_call.function.arguments
-                                    );
-                                    messages.push(MessageRequest::Tool(ToolMessageRequest::new(
-                                        &format!("解析失败: {}", e),
-                                        &tool_call.id,
-                                    )));
-                                }
-                            }
-                        }
-                        "submit_glossary" => {
-                            match serde_json::from_str::<SubmittedGlossaryEntry>(
-                                &tool_call.function.arguments,
-                            ) {
-                                Ok(entry) => {
-                                    debug!(
-                                        "AI 提交术语: {} → {} ({})",
-                                        entry.term,
-                                        entry.translation,
-                                        entry.reason.as_deref().unwrap_or("无理由")
-                                    );
-                                    has_valid_call = true;
-                                    if let Some(old) =
-                                        glossary.with_section(Some("ai-glossary")).get(&entry.term)
-                                    {
-                                        warn!(
-                                            "[术语覆盖] AI 提交术语覆盖已有翻译: {} → {} (原翻译: {})",
-                                            entry.term, entry.translation, old
-                                        );
+                                        glossary.with_section(Some(mod_name)).set(term, trans);
                                         messages.push(MessageRequest::Tool(
                                             ToolMessageRequest::new(
                                                 &format!(
-                                                    "禁止覆盖术语 {}：原 {} → 新 {}。已人工记录覆盖请求，会之后处理。",
-                                                    entry.term, old, entry.translation
-                                                ),
-                                                &tool_call.id,
-                                            ),
-                                        ));
-                                    } else {
-                                        glossary
-                                            .with_section(Some("ai-glossary"))
-                                            .set(&entry.term, &entry.translation);
-                                        messages.push(MessageRequest::Tool(
-                                            ToolMessageRequest::new(
-                                                &format!(
-                                                    "术语已记录: {} → {}",
-                                                    entry.term, entry.translation
+                                                    "术语已记录到 [{}]: {} → {}",
+                                                    mod_name, term, trans
                                                 ),
                                                 &tool_call.id,
                                             ),
                                         ));
                                     }
                                 }
-                                Err(e) => {
-                                    warn!("解析术语数据失败: {}", e);
-                                    messages.push(MessageRequest::Tool(ToolMessageRequest::new(
-                                        &format!("解析术语失败: {}", e),
-                                        &tool_call.id,
-                                    )));
-                                }
                             }
-                        }
-                        _ => {
-                            warn!("LLM 调用了未知函数: {}", fn_name);
-                            messages.push(MessageRequest::Tool(ToolMessageRequest::new(
-                                &format!("未知函数: {}", fn_name),
-                                &tool_call.id,
-                            )));
+                            Err(e) => {
+                                warn!("解析术语数据失败: {}", e);
+                                needs_retry = true;
+                                messages.push(MessageRequest::Tool(ToolMessageRequest::new(
+                                    &format!("解析术语失败: {}", e),
+                                    &tool_call.id,
+                                )));
+                            }
                         }
                     }
+                    _ => {
+                        warn!("LLM 调用了未知函数: {}", fn_name);
+                        needs_retry = true;
+                        messages.push(MessageRequest::Tool(ToolMessageRequest::new(
+                            &format!("未知函数: {}", fn_name),
+                            &tool_call.id,
+                        )));
+                    }
                 }
+            }
 
-                if !has_valid_call {
-                    // 所有 tool_call 解析失败，让 LLM 重试
-                    continue;
-                }
-
-                // 如果 finish_reason 是 Stop，不再追问
-                if finish_reason == FinishReason::Stop {
+            if !has_valid_call {
+                parse_error_streak += 1;
+                if parse_error_streak >= 3 && finish_reason == FinishReason::Stop {
+                    warn!("连续多次工具调用解析失败且模型已停止，退出循环");
                     break;
                 }
-
-                // 询问 LLM 是否还有更多翻译
-                messages.push(MessageRequest::user(
-                        "请继续提交剩余的翻译条目，或调用 stop 完成。如果所有翻译已完成，请只回复'所有翻译已完成'。",
-                    ));
                 continue;
             }
+            parse_error_streak = 0;
+
+            if finish_reason == FinishReason::Stop && !needs_retry {
+                break;
+            }
+
+            let next_prompt = if needs_retry {
+                "请根据上述警告检查并重新提交或确认翻译。如果所有翻译已完成，请只回复'所有翻译已完成'。"
+            } else {
+                "请继续提交剩余的翻译条目，或调用 stop 完成。如果所有翻译已完成，请只回复'所有翻译已完成'。"
+            };
+            messages.push(MessageRequest::user(next_prompt));
+            continue;
         }
 
         // 没有 tool_calls：如果已有 assistant 文本回复，结束；否则是纯文本响应
-        if !msg.content.is_empty()
-        {
+        if !msg.content.is_empty() {
             messages.push(MessageRequest::Assistant(msg.clone()));
             debug!("LLM 最终回复: {}", msg.content);
         }
@@ -1211,7 +1623,7 @@ pub async fn call_llm_for_translation(
         warn!("LLM 交互达到最大循环次数 ({})，返回已收集的翻译", MAX_LOOPS);
     }
 
-    Ok(result_ini)
+    Ok(result_by_file)
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1230,7 +1642,7 @@ const TARGET_LANG: &str = "zh-CN";
 /// 当前固定从 en 翻译到 zh-CN：
 /// - 如果 mod 只有 zh-CN 没有 en → 中文优先 mod，跳过
 /// - 如果 mod 没有 en → 无法翻译，跳过
-/// 
+///
 /// 流式下载（自动使用全局进度条，完成后自动消失）
 async fn stream_download(resp: reqwest::Response) -> anyhow::Result<Vec<u8>> {
     let total = resp.content_length().unwrap_or(0);
@@ -1245,7 +1657,7 @@ async fn stream_download(resp: reqwest::Response) -> anyhow::Result<Vec<u8>> {
     let mut data = Vec::with_capacity(total as usize);
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| anyhow::anyhow!("下载错误: {}", e))?;
+        let chunk = chunk.map_err(|e| anyhow::anyhow!("下载错误: {}", e.without_url()))?;
         pb.inc(chunk.len() as u64);
         data.extend_from_slice(&chunk);
     }
@@ -1253,6 +1665,7 @@ async fn stream_download(resp: reqwest::Response) -> anyhow::Result<Vec<u8>> {
     Ok(data)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_mod(
     client_fa: &FactorioWebClient,
     client_deepseek: &deepseek_api::DeepSeekClient,
@@ -1289,9 +1702,7 @@ async fn process_mod(
     };
 
     // 2. 下载 mod 并提取翻译文件（流式 + 进度条）
-    let resp = client_fa
-        .download_mod_response(download_url)
-        .await?;
+    let resp = client_fa.download_mod_response(download_url).await?;
     let zip_data = stream_download(resp).await?;
 
     let current_locale = extract_locale_from_zip(&zip_data)
@@ -1309,7 +1720,6 @@ async fn process_mod(
     let has_target = current_locale.contents.contains_key(TARGET_LANG);
 
     if !has_source {
-        // 没有 en 文件
         if has_target {
             info!("  ↳ 中文优先 mod（无 en 但有 zh-CN），跳过");
         } else {
@@ -1318,12 +1728,18 @@ async fn process_mod(
         return Ok(());
     }
 
-    // 获取源语言文件
     let source_lang_info = &current_locale.contents[SOURCE_LANG];
+    let source_ini_by_file: BTreeMap<String, ini::Ini> = source_lang_info
+        .contents
+        .iter()
+        .map(|(fname, content)| {
+            translation::str_to_ini(content).map(|ini| (fname.clone(), ini))
+        })
+        .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
+    let known_source_files: BTreeSet<String> = source_ini_by_file.keys().cloned().collect();
 
-    // 获取旧的 zh-CN 缓存（用于差异计算和合并）
-    // 旧的 zh-CN 翻译（用于上下文参考和合并）
-    let old_target_ini_by_file: BTreeMap<String, ini::Ini> = cached_locale
+    // 旧的 zh-CN 缓存（用于差异计算、上下文参考和合并）
+    let mut old_target_ini_by_file: BTreeMap<String, ini::Ini> = cached_locale
         .as_ref()
         .and_then(|c| c.contents.get(TARGET_LANG))
         .map(|lang_info| {
@@ -1338,6 +1754,35 @@ async fn process_mod(
                 .collect()
         })
         .unwrap_or_default();
+
+    // 合并模组自带 zh-CN（仅保留真正含中文且不同于英文原文的词条，且自带优先于旧缓存）
+    let mut builtin_zh_by_file: BTreeMap<String, ini::Ini> = BTreeMap::new();
+    if let Some(builtin_target) = current_locale.contents.get(TARGET_LANG) {
+        for (file_name, builtin_content) in &builtin_target.contents {
+            let Ok(builtin_ini) = translation::str_to_ini(builtin_content) else {
+                continue;
+            };
+            let en_ini = source_ini_by_file.get(file_name);
+            let mut valid_ini = ini::Ini::new();
+            for (sec, props) in builtin_ini.iter() {
+                for (k, v) in props.iter() {
+                    let en_val = en_ini.and_then(|e| e.section(sec)).and_then(|p| p.get(k));
+                    if contains_cjk(v) && en_val != Some(v) {
+                        valid_ini.with_section(sec).set(k, v);
+                    }
+                }
+            }
+            if !valid_ini.is_empty() {
+                let target = old_target_ini_by_file.entry(file_name.clone()).or_default();
+                for (sec, props) in valid_ini.iter() {
+                    for (k, v) in props.iter() {
+                        target.with_section(sec).set(k, v);
+                    }
+                }
+                builtin_zh_by_file.insert(file_name.clone(), valid_ini);
+            }
+        }
+    }
 
     // 旧的 en 原文（用于 diff 计算：比较新旧 en，只翻译变更部分）
     let old_source_ini_by_file: BTreeMap<String, ini::Ini> = cached_locale
@@ -1356,18 +1801,39 @@ async fn process_mod(
         })
         .unwrap_or_default();
 
-    // 4. 构建翻译任务：比较新旧 en 原文，只取新增或变更的条目
+    // 4. 构建自愈式待翻译任务：(new_en vs old_en) ∪ (current_en 中缺失 zh-CN 的键) − 自带有效 zh-CN
     let mut file_diffs: BTreeMap<String, ini::Ini> = BTreeMap::new();
     let mut total_entries = 0usize;
 
-    for (file_name, content) in &source_lang_info.contents {
-        let current_ini = translation::str_to_ini(content)?;
-
-        let diff = if let Some(old_source_ini) = old_source_ini_by_file.get(file_name) {
-            translation::diff_ini(old_source_ini, &current_ini)
+    for (file_name, current_ini) in &source_ini_by_file {
+        let en_diff = if let Some(old_source_ini) = old_source_ini_by_file.get(file_name) {
+            translation::diff_ini(old_source_ini, current_ini)
         } else {
             current_ini.clone()
         };
+        let missing_zh = if let Some(old_target_ini) = old_target_ini_by_file.get(file_name) {
+            translation::diff_ini_keys_only(old_target_ini, current_ini)
+        } else {
+            current_ini.clone()
+        };
+        let builtin_file_ini = builtin_zh_by_file.get(file_name);
+
+        let mut diff = ini::Ini::new();
+        for (sec, props) in current_ini.iter() {
+            let in_en_diff = en_diff.section(sec);
+            let in_missing = missing_zh.section(sec);
+            let in_builtin = builtin_file_ini.and_then(|b| b.section(sec));
+            for (k, v) in props.iter() {
+                if in_builtin.and_then(|p| p.get(k)).is_some() {
+                    continue;
+                }
+                let changed = in_en_diff.and_then(|p| p.get(k)).is_some();
+                let missing = in_missing.and_then(|p| p.get(k)).is_some();
+                if changed || missing {
+                    diff.with_section(sec).set(k, v);
+                }
+            }
+        }
 
         if diff.is_empty() {
             continue;
@@ -1376,10 +1842,51 @@ async fn process_mod(
         file_diffs.insert(file_name.clone(), diff);
     }
 
+    let deps_changed = cached_locale
+        .as_ref()
+        .map(|c| c.dependencies != current_locale.dependencies)
+        .unwrap_or(true);
+
     if file_diffs.is_empty() || total_entries == 0 {
-        info!("  ↳ 没有需要翻译的新内容，跳过");
+        if cached_locale.is_none() || !builtin_zh_by_file.is_empty() || deps_changed {
+            let mut merged_target_lang = LangInfo {
+                contents: indexmap::IndexMap::new(),
+            };
+            for (file_name, reference_ini) in &source_ini_by_file {
+                let old_ini = old_target_ini_by_file
+                    .get(file_name)
+                    .cloned()
+                    .unwrap_or_default();
+                let mut merged_ini =
+                    translation::merge_ini(reference_ini, &old_ini, &ini::Ini::new());
+                normalize_merged_zh_ini(&mut merged_ini);
+                merged_target_lang
+                    .contents
+                    .insert(file_name.clone(), translation::ini_to_str(&merged_ini)?);
+            }
+            let mut merged_locale = cached_locale.unwrap_or_else(|| LocaleInfo {
+                contents: indexmap::IndexMap::new(),
+                version: String::new(),
+                dependencies: Vec::new(),
+            });
+            merged_locale.version = current_locale.version.clone();
+            merged_locale.dependencies = current_locale.dependencies.clone();
+            merged_locale
+                .contents
+                .insert(SOURCE_LANG.to_string(), source_lang_info.clone());
+            merged_locale
+                .contents
+                .insert(TARGET_LANG.to_string(), merged_target_lang);
+            std::fs::create_dir_all(&config.cache_dir)?;
+            let cache_file_path = config.cache_dir.join(format!("{}.json", mod_name));
+            let _persistent = persistent_via_file(merged_locale, &cache_file_path);
+            info!("  ↳ 无新增待译词条，已同步自带译文/依赖缓存，跳过 LLM");
+        } else {
+            info!("  ↳ 没有需要翻译的新内容，跳过");
+        }
         return Ok(());
     }
+
     info!(
         "  ↳ 需要翻译 {} 个文件 / {} 个条目 ({} → {})",
         file_diffs.len(),
@@ -1388,110 +1895,121 @@ async fn process_mod(
         TARGET_LANG
     );
 
-    // 5. 构建增强的上下文参考：如果 mod 自带 zh-CN 翻译，合并到缓存中（自带优先）
-    let context_locale: Option<LocaleInfo> =
-        if let Some(builtin_target) = current_locale.contents.get(TARGET_LANG) {
-            // mod 自带了 zh-CN 翻译 → 合并：自带优先，本地缓存兜底
-            let mut merged = cached_locale.clone().unwrap_or_else(|| LocaleInfo {
-                contents: indexmap::IndexMap::new(),
-                version: String::new(),
-            });
-            let mut merged_target = LangInfo {
-                contents: indexmap::IndexMap::new(),
-            };
-
-            // 以自带 zh-CN 文件为基准，用 en 原文作为 key 参考进行合并
-            for (file_name, builtin_content) in &builtin_target.contents {
-                let builtin_ini =
-                    translation::str_to_ini(builtin_content).with_context(|| file_name.clone())?;
-                let en_ini = source_lang_info
-                    .contents
-                    .get(file_name)
-                    .map(|s| translation::str_to_ini(s))
-                    .transpose()?;
-                let reference_ini = en_ini.as_ref().unwrap_or(&builtin_ini);
-                let old_ini = old_target_ini_by_file.get(file_name);
-
-                let merged_ini = translation::merge_ini(
-                    reference_ini,
-                    old_ini.unwrap_or(&ini::Ini::new()),
-                    &builtin_ini,
-                );
-                merged_target
-                    .contents
-                    .insert(file_name.clone(), translation::ini_to_str(&merged_ini)?);
-            }
-
-            merged
-                .contents
-                .insert(TARGET_LANG.to_string(), merged_target);
-            Some(merged)
-        } else {
-            cached_locale.clone()
+    // 5. 构建上下文参考（仅保留已合并自带译文的 zh-CN 供风格参考）与按依赖链筛选的术语表
+    let dep_chain =
+        resolve_mod_dependency_chain(mod_name, &current_locale.dependencies, &config.cache_dir);
+    let style_locale = if old_target_ini_by_file.is_empty() {
+        None
+    } else {
+        let mut style_zh = LangInfo {
+            contents: indexmap::IndexMap::new(),
         };
+        for (file_name, ini) in &old_target_ini_by_file {
+            if let Ok(s) = translation::ini_to_str(ini) {
+                style_zh.contents.insert(file_name.clone(), s);
+            }
+        }
+        let mut contents = indexmap::IndexMap::new();
+        contents.insert(TARGET_LANG.to_string(), style_zh);
+        Some(LocaleInfo {
+            contents,
+            version: current_locale.version.clone(),
+            dependencies: current_locale.dependencies.clone(),
+        })
+    };
 
-    let user_prompt = build_user_prompt(base_locale, &file_diffs, context_locale.as_ref())?;
+    const MAX_BATCH_ENTRIES: usize = 120;
+    let batches = split_file_diffs_into_batches(&file_diffs, MAX_BATCH_ENTRIES);
+    let mut llm_translation_by_file: BTreeMap<String, ini::Ini> = BTreeMap::new();
 
-    info!("  ↳ 调用 LLM 进行翻译...");
-    let llm_translation =
-        call_llm_for_translation(client_deepseek, system_prompt, &user_prompt, glossary).await?;
+    for (batch_idx, batch_diffs) in batches.iter().enumerate() {
+        let mod_glossary =
+            build_mod_glossary(base_locale, glossary, &dep_chain, batch_diffs);
+        let user_prompt =
+            build_user_prompt(&mod_glossary, batch_diffs, style_locale.as_ref())?;
+        let expected_files: Vec<String> = batch_diffs.keys().cloned().collect();
 
-    if llm_translation.is_empty() {
-        warn!("  ↳ LLM 未返回任何翻译结果");
-        return Ok(());
+        if batches.len() > 1 {
+            info!(
+                "  ↳ 调用 LLM 进行分批翻译 ({}/{})...",
+                batch_idx + 1,
+                batches.len()
+            );
+        } else {
+            info!("  ↳ 调用 LLM 进行翻译...");
+        }
+
+        let batch_result = call_llm_for_translation(
+            client_deepseek,
+            mod_name,
+            &expected_files,
+            system_prompt,
+            &user_prompt,
+            glossary,
+        )
+        .await?;
+
+        for (fname, ini) in batch_result {
+            let entry = llm_translation_by_file.entry(fname).or_default();
+            for (sec, props) in ini.iter() {
+                for (k, v) in props.iter() {
+                    entry.with_section(sec).set(k, v);
+                }
+            }
+        }
+    }
+
+    if llm_translation_by_file.is_empty() {
+        anyhow::bail!("LLM 未返回任何翻译结果");
     }
     info!(
-        "  ↳ LLM 返回了 {} 个 section 的翻译",
-        llm_translation.iter().count()
+        "  ↳ LLM 返回了 {} 个文件的翻译",
+        llm_translation_by_file.len()
     );
 
-    // 6. 合并翻译：以 en 原文为基准，LLM 翻译优先，旧 zh-CN 缓存兜底
-    //    只更新 zh-CN，保留缓存中其他语言的翻译不变
+    // 6. 合并翻译：以 en 原文为基准，LLM 翻译优先，旧 zh-CN（含自带 zh-CN）兜底
     let mut merged_target_lang = LangInfo {
         contents: indexmap::IndexMap::new(),
     };
 
-    for (file_name, content) in &source_lang_info.contents {
-        let reference_ini = translation::str_to_ini(content)?;
-        let old_ini = old_target_ini_by_file.get(file_name);
-
-        let merged_ini = translation::merge_ini(
-            &reference_ini,
-            old_ini.unwrap_or(&ini::Ini::new()),
-            &llm_translation,
+    for (file_name, reference_ini) in &source_ini_by_file {
+        let old_ini = old_target_ini_by_file
+            .get(file_name)
+            .cloned()
+            .unwrap_or_default();
+        let merged_ini = merge_with_file_map(
+            file_name,
+            reference_ini,
+            &old_ini,
+            &llm_translation_by_file,
+            &known_source_files,
         );
-        let merged_str = translation::ini_to_str(&merged_ini)?;
         merged_target_lang
             .contents
-            .insert(file_name.clone(), merged_str);
+            .insert(file_name.clone(), translation::ini_to_str(&merged_ini)?);
     }
 
-    // 7. 完整性检查：逐文件对比 en 原文，找出遗漏的 key 并让 AI 补充
+    // 7. 完整性检查：逐文件对比 en 原文，找出遗漏的 key 并让 AI 分批补充
     const MAX_INTEGRITY_ROUNDS: usize = 2;
     for round in 0..MAX_INTEGRITY_ROUNDS {
         let mut missing_diffs: BTreeMap<String, ini::Ini> = BTreeMap::new();
-        for (file_name, content) in &source_lang_info.contents {
-            let reference_ini = translation::str_to_ini(content)?;
+        for (file_name, reference_ini) in &source_ini_by_file {
             let merged_ini = merged_target_lang
                 .contents
                 .get(file_name)
                 .map(|s| translation::str_to_ini(s))
                 .transpose()?
                 .unwrap_or_default();
-            let missing = translation::diff_ini_keys_only(&merged_ini, &reference_ini);
+            let missing = translation::diff_ini_keys_only(&merged_ini, reference_ini);
             if !missing.is_empty() {
                 missing_diffs.insert(file_name.clone(), missing);
             }
-        }
-        if missing_diffs.is_empty() {
-            info!("  ↳ 完整性检查通过 (第 {} 轮)", round + 1);
-            break;
         }
         let missing_count: usize = missing_diffs
             .values()
             .flat_map(|ini| ini.iter().flat_map(|(_, p)| p.iter()))
             .count();
-        if missing_count == 0 {
+        if missing_diffs.is_empty() || missing_count == 0 {
             info!("  ↳ 完整性检查通过 (第 {} 轮)", round + 1);
             break;
         }
@@ -1500,44 +2018,71 @@ async fn process_mod(
             missing_count,
             round + 1
         );
-        info!("  ↳ 遗漏内容详细信息: {:?}", missing_diffs);
-        let supplement_prompt = format!(
-            "## 补充翻译任务\n\n以下键在上轮翻译中被遗漏，请补充翻译：\n\n{}",
-            build_user_prompt(base_locale, &missing_diffs, None)?
-        );
-        let supplement_result =
-            call_llm_for_translation(client_deepseek, system_prompt, &supplement_prompt, glossary)
-                .await?;
-        if supplement_result.is_empty() {
+        debug!("  ↳ 遗漏内容详细信息: {:?}", missing_diffs);
+
+        let missing_batches = split_file_diffs_into_batches(&missing_diffs, MAX_BATCH_ENTRIES);
+        let mut supplement_by_file: BTreeMap<String, ini::Ini> = BTreeMap::new();
+        for missing_batch in &missing_batches {
+            let mod_glossary =
+                build_mod_glossary(base_locale, glossary, &dep_chain, missing_batch);
+            let supplement_prompt = format!(
+                "## 补充翻译任务\n\n以下键在上轮翻译中被遗漏，请补充翻译：\n\n{}",
+                build_user_prompt(&mod_glossary, missing_batch, None)?
+            );
+            let expected_files: Vec<String> = missing_batch.keys().cloned().collect();
+            let batch_result = call_llm_for_translation(
+                client_deepseek,
+                mod_name,
+                &expected_files,
+                system_prompt,
+                &supplement_prompt,
+                glossary,
+            )
+            .await?;
+            for (fname, ini) in batch_result {
+                let entry = supplement_by_file.entry(fname).or_default();
+                for (sec, props) in ini.iter() {
+                    for (k, v) in props.iter() {
+                        entry.with_section(sec).set(k, v);
+                    }
+                }
+            }
+        }
+        if supplement_by_file.is_empty() {
             warn!("  ↳ AI 未返回补充翻译，停止完整性检查");
             break;
         }
-        for (file_name, content) in &source_lang_info.contents {
-            let reference_ini = translation::str_to_ini(content)?;
+        for (file_name, reference_ini) in &source_ini_by_file {
             let old_ini = merged_target_lang
                 .contents
                 .get(file_name)
                 .map(|s| translation::str_to_ini(s))
                 .transpose()?
                 .unwrap_or_default();
-            let merged_ini = translation::merge_ini(&reference_ini, &old_ini, &supplement_result);
+            let merged_ini = merge_with_file_map(
+                file_name,
+                reference_ini,
+                &old_ini,
+                &supplement_by_file,
+                &known_source_files,
+            );
             merged_target_lang
                 .contents
                 .insert(file_name.clone(), translation::ini_to_str(&merged_ini)?);
         }
     }
 
-    // 构建最终 LocaleInfo：保留其他语言不变，更新 zh-CN 和 en 原文
+    // 构建最终 LocaleInfo：保留其他语言不变，更新 zh-CN、en 原文和依赖列表
     let mut merged_locale = cached_locale.unwrap_or_else(|| LocaleInfo {
         contents: indexmap::IndexMap::new(),
         version: String::new(),
+        dependencies: Vec::new(),
     });
     merged_locale.version = current_locale.version.clone();
-    // 保存 en 原文（供下次 diff 计算使用）
+    merged_locale.dependencies = current_locale.dependencies.clone();
     merged_locale
         .contents
         .insert(SOURCE_LANG.to_string(), source_lang_info.clone());
-    // 保存 zh-CN 翻译
     merged_locale
         .contents
         .insert(TARGET_LANG.to_string(), merged_target_lang);
@@ -1576,9 +2121,9 @@ async fn process_mod(
 ///
 /// 1. 初始化 Factorio 和 DeepSeek 客户端
 /// 2. 加载外部参考文件
-/// 3. 获取待处理的 mod 列表（自动或手动指定）
+/// 3. 获取待处理的 mod 列表（自动模式合并增量更新和历史失败）
 /// 4. 逐个处理每个 mod
-/// 5. 更新 last_run 时间（仅自动模式）
+/// 5. 保存失败队列，更新 last_run 时间（仅无限制自动模式）
 pub async fn run_translation_pipeline(
     config: FlowConfig,
     since: Option<DateTime<Utc>>,
@@ -1651,6 +2196,12 @@ pub async fn run_translation_pipeline(
             .mods_by_names(&name_strs)
             .await
             .context("获取指定 mod 信息失败")?;
+        let found: BTreeSet<&str> = results.iter().map(|m| m.name.as_str()).collect();
+        for name in names {
+            if !found.contains(name.as_str()) {
+                state.record_mod_result(name, false);
+            }
+        }
         info!("手动指定 {} 个 mod，找到 {} 个", names.len(), results.len());
         results
     } else {
@@ -1662,8 +2213,32 @@ pub async fn run_translation_pipeline(
             .await
             .context("获取更新的 mod 列表失败")?;
         info!("发现 {} 个更新的 mod", mods.len());
-        let limit = limit.unwrap_or(usize::MAX);
-        mods.into_iter().take(limit).collect()
+        let updated_names: BTreeSet<&str> = mods.iter().map(|m| m.name.as_str()).collect();
+        let retry_names: Vec<&str> = state
+            .failed_mods
+            .iter()
+            .map(String::as_str)
+            .filter(|name| !updated_names.contains(name))
+            .collect();
+        let retries = if retry_names.is_empty() {
+            Vec::new()
+        } else {
+            // mods_by_names 对单个查询错误仅记日志；原失败队列保留这些名称。
+            let retries = fa_client
+                .mods_by_names(&retry_names)
+                .await
+                .context("获取待重试 mod 信息失败")?;
+            info!(
+                "待重试 {} 个 mod，找到 {} 个",
+                retry_names.len(),
+                retries.len()
+            );
+            retries
+        };
+        merge_mod_candidates(mods, retries)
+            .into_iter()
+            .take(limit.unwrap_or(usize::MAX))
+            .collect()
     };
 
     let pb = crate::progress::new_bar();
@@ -1687,6 +2262,8 @@ pub async fn run_translation_pipeline(
             .is_some_and(|s| s == "localizations")
         {
             info!("跳过 mod {}（localizations 分类）", mod_entry.name);
+            state.failed_mods.remove(&mod_entry.name);
+            pb.inc(1);
             continue;
         }
 
@@ -1705,23 +2282,17 @@ pub async fn run_translation_pipeline(
 
         let Some(dl_url) = dl_url else {
             warn!("mod {} 没有可下载的版本，跳过", mod_entry.name);
+            state.record_mod_result(&mod_entry.name, false);
+            failed.push(mod_entry.name.clone());
             pb.inc(1);
             continue;
         };
-
-        // 每次处理前重新合并基础对照表 + AI 术语表（AI 可能在之前的 mod 中新增了术语）
-        let mut combined_glossary = base_locale.clone();
-        for (sec, props) in ai_glossary.iter() {
-            for (k, v) in props.iter() {
-                combined_glossary.with_section(sec).set(k, v);
-            }
-        }
 
         match process_mod(
             &fa_client,
             &deepseek_client,
             &config,
-            &combined_glossary,
+            &base_locale,
             &system_prompt,
             &mut ai_glossary,
             &mod_entry.name,
@@ -1730,12 +2301,14 @@ pub async fn run_translation_pipeline(
         .await
         {
             Ok(()) => {
+                state.record_mod_result(&mod_entry.name, true);
                 processed += 1;
                 pb.set_message(format!("✓ {}", mod_entry.name));
                 pb.inc(1);
             }
             Err(e) => {
                 error!("处理 mod {} 失败: {:?}", mod_entry.name, e);
+                state.record_mod_result(&mod_entry.name, false);
                 failed.push(mod_entry.name.clone());
                 pb.set_message(format!("✗ {}", mod_entry.name));
                 pb.inc(1);
@@ -1744,13 +2317,9 @@ pub async fn run_translation_pipeline(
         }
     }
 
-    // 更新上次运行时间（仅在自动模式下）
-    if is_auto {
+    // 有限运行可能尚未获取/处理全部增量，不能推进时间戳，否则会漏掉未处理项。
+    if is_auto && limit.is_none() {
         state.last_run = now;
-        std::fs::create_dir_all(&config.cache_dir)?;
-        {
-            _ = persistent_via_file(state, &state_path);
-        }
         info!(
             "翻译管道完成 — 处理了 {}/{} 个 mod，last_run 更新为: {}",
             processed,
@@ -1761,8 +2330,15 @@ pub async fn run_translation_pipeline(
         info!("翻译完成 — 处理了 {} 个 mod", processed);
     }
 
-    if failed.is_empty() {
+    // 手动翻译也更新失败队列，但不推进自动增量时间戳。
+    std::fs::create_dir_all(&config.cache_dir)?;
+    std::fs::write(&state_path, serde_json::to_vec_pretty(&state)?)
+        .with_context(|| format!("无法保存管道状态: {:?}", state_path))?;
+
+    if failed.is_empty() && state.failed_mods.is_empty() {
         info!("所有 mod 处理成功");
+    } else if failed.is_empty() {
+        warn!("仍有 {} 个 mod 待下次重试", state.failed_mods.len());
     } else {
         warn!("以下 mod 处理失败: {:?}", failed);
     }
@@ -1789,6 +2365,67 @@ mod tests {
         request::{Function, MessageRequest, ToolMessageRequest, ToolObject, ToolType},
         response::FinishReason,
     };
+
+    #[test]
+    fn test_pipeline_state_legacy_and_retry_lifecycle() {
+        let mut state: super::PipelineState =
+            serde_json::from_str(r#"{"last_run":"2026-10-31T23:00:00Z"}"#).unwrap();
+        assert!(state.failed_mods.is_empty());
+        let last_run = state.last_run;
+
+        state.record_mod_result("failed", false);
+        state.record_mod_result("failed", false);
+        state.record_mod_result("unresolved", false);
+        // 模拟跨会话序列化与重新加载。
+        let mut state: super::PipelineState =
+            serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        assert_eq!(state.failed_mods.len(), 2);
+        state.record_mod_result("failed", true);
+        assert_eq!(state.failed_mods, ["unresolved".to_owned()].into());
+        assert_eq!(state.last_run, last_run);
+    }
+
+    fn candidate(name: &str, version: &str) -> factorio_api::ResultEntry {
+        serde_json::from_value(serde_json::json!({
+            "name": name,
+            "title": name,
+            "owner": "test",
+            "summary": "",
+            "downloads_count": 0,
+            "latest_release": {
+                "download_url": format!("/download/{name}/{version}"),
+                "file_name": format!("{name}_{version}.zip"),
+                "info_json": { "factorio_version": "2.1" },
+                "released_at": "2026-10-31T23:00:00Z",
+                "version": version,
+                "sha1": ""
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn test_pipeline_candidates_union_prefers_updated_version() {
+        let mods = super::merge_mod_candidates(
+            vec![candidate("both", "2.0.0"), candidate("new", "1.0.0")],
+            vec![candidate("both", "1.0.0"), candidate("retry", "1.0.0")],
+        );
+        assert_eq!(
+            mods.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            ["both", "new", "retry"]
+        );
+        assert_eq!(mods[0].latest_release.as_ref().unwrap().version, "2.0.0");
+    }
+
+    #[test]
+    fn test_pipeline_candidates_retry_without_updates() {
+        let mods = super::merge_mod_candidates(
+            Vec::new(),
+            vec![candidate("retry", "1.0.0"), candidate("retry", "1.0.0")],
+        );
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].name, "retry");
+    }
 
     #[tokio::test]
     async fn main() -> anyhow::Result<()> {
@@ -1911,5 +2548,124 @@ mod tests {
         assert!(locale.contents.contains_key("zh-CN"));
         let en_base = locale.contents["en"].contents["base.cfg"].as_str();
         assert!(en_base.contains("iron-plate=Iron plate"));
+    }
+
+    #[test]
+    fn test_parse_mod_dependencies() {
+        let info = serde_json::json!({
+            "dependencies": [
+                "base >= 2.1",
+                "core",
+                "! incompatible-mod",
+                "(?) flib >= 0.14.0",
+                "? space-age >= 2.0",
+                "~ custom-lib=1.0",
+                "+ helper-mod",
+                "flib >= 0.12.0"
+            ]
+        });
+        let deps = super::parse_mod_dependencies(&info);
+        assert_eq!(deps, vec!["flib", "space-age", "custom-lib", "helper-mod"]);
+    }
+
+    #[test]
+    fn test_resolve_mod_dependency_chain_bfs() {
+        let tmp = std::env::temp_dir().join(format!("tanvec_dep_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        std::fs::write(
+            tmp.join("dep-a.json"),
+            r#"{"contents":{},"version":"1.0","dependencies":["dep-b","other-mod"]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("dep-b.json"),
+            r#"{"contents":{},"version":"1.0","dependencies":["dep-c"]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("dep-c.json"),
+            r#"{"contents":{},"version":"1.0","dependencies":["dep-d-too-deep"]}"#,
+        )
+        .unwrap();
+
+        let chain = super::resolve_mod_dependency_chain("my-mod", &["dep-a".to_string()], &tmp);
+        assert_eq!(
+            chain,
+            vec!["dep-a", "dep-b", "other-mod", "dep-c", "my-mod"]
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_build_mod_glossary_dependency_and_case_insensitive() {
+        let mut base = ini::Ini::new();
+        base.with_general_section().set("Iron plate", "铁板");
+        base.with_general_section().set("Copper plate", "铜板");
+
+        let mut ai = ini::Ini::new();
+        ai.with_section(Some("ai-glossary"))
+            .set("Angel", "天使虫")
+            .set("Stellar Forge", "恒星锻炉");
+        ai.with_section(Some("unrelated-mod"))
+            .set("Hauler", "货运飞艇");
+        ai.with_section(Some("dep-mod"))
+            .set("Hauler", "重型运输车")
+            .set("stellar forge", "星辰锻炉");
+        ai.with_section(Some("my-mod"))
+            .set("hauler", "矿石拖运车");
+
+        let mut diff = ini::Ini::new();
+        diff.with_section(Some("item-name"))
+            .set("x", "Use iron plate in Stellar Forge with hauler");
+
+        let mut file_diffs = std::collections::BTreeMap::new();
+        file_diffs.insert("locale.cfg".to_string(), diff);
+
+        let dep_chain = vec!["dep-mod".to_string(), "my-mod".to_string()];
+        let result = super::build_mod_glossary(&base, &ai, &dep_chain, &file_diffs);
+        let general = result.section(None::<String>).unwrap();
+
+        // 命中了 iron plate（大小写不敏感），未命中 Copper plate，未命中全局 Angel
+        assert_eq!(general.get("Iron plate"), Some("铁板"));
+        assert_eq!(general.get("Copper plate"), None);
+        assert_eq!(general.get("Angel"), None);
+        // dep-mod 覆盖了 ai-glossary 的 Stellar Forge，my-mod 覆盖了 dep-mod 的 Hauler（大小写去重）
+        assert_eq!(general.get("stellar forge"), Some("星辰锻炉"));
+        assert_eq!(general.get("Stellar Forge"), None);
+        assert_eq!(general.get("hauler"), Some("矿石拖运车"));
+        assert_eq!(general.get("Hauler"), None);
+    }
+
+    #[test]
+    fn test_split_file_diffs_into_batches() {
+        let mut ini1 = ini::Ini::new();
+        for i in 0..150 {
+            ini1.with_section(Some("item-name"))
+                .set(format!("k{}", i), format!("val {}", i));
+        }
+        let mut ini2 = ini::Ini::new();
+        for i in 0..30 {
+            ini2.with_section(Some("recipe-name"))
+                .set(format!("r{}", i), format!("rec {}", i));
+        }
+        let mut file_diffs = std::collections::BTreeMap::new();
+        file_diffs.insert("a.cfg".to_string(), ini1);
+        file_diffs.insert("b.cfg".to_string(), ini2);
+
+        let batches = super::split_file_diffs_into_batches(&file_diffs, 120);
+        assert_eq!(batches.len(), 2);
+        let count0: usize = batches[0]
+            .values()
+            .flat_map(|i| i.iter().flat_map(|(_, p)| p.iter()))
+            .count();
+        let count1: usize = batches[1]
+            .values()
+            .flat_map(|i| i.iter().flat_map(|(_, p)| p.iter()))
+            .count();
+        assert_eq!(count0, 120);
+        assert_eq!(count1, 60);
     }
 }

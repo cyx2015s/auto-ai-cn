@@ -144,14 +144,25 @@ async fn main() -> anyhow::Result<()> {
             name,
             protect,
         }) => {
-            let base_keys = if protect {
+            let (base_keys, base_en_keys) = if protect {
                 let game_data_path = std::env::var("FACTORIO_DATA_PATH")
                     .context("protect 模式需要设置 FACTORIO_DATA_PATH 环境变量")?;
-                Some(flow::extract_base_all(Path::new(&game_data_path))?)
+                let path = Path::new(&game_data_path);
+                (
+                    Some(flow::extract_base_all(path)?),
+                    Some(flow::extract_base_all_en(path)?),
+                )
             } else {
-                None
+                (None, None)
             };
-            pack::pack_all_to_one_mod(&cache_dir, &output_dir, &name, protect, base_keys.as_ref())?;
+            pack::pack_all_to_one_mod(
+                &cache_dir,
+                &output_dir,
+                &name,
+                protect,
+                base_keys.as_ref(),
+                base_en_keys.as_ref(),
+            )?;
         }
 
         Some(Command::Upload { file }) => {

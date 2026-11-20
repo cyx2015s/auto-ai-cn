@@ -77,26 +77,66 @@ fn find_pack(mods_dir: &Path, prefix: &str) -> anyhow::Result<PathBuf> {
     Ok(candidates.last().unwrap().clone())
 }
 
-/// 从 zip 中提取 locale/zh-CN/*.cfg 文件内容
-fn extract_locale_files(zip_path: &Path) -> anyhow::Result<BTreeMap<String, String>> {
+/// 从 zip 中提取 `locale/zh-CN/*.cfg[.disabled]` 文件内容，并按 `mod_name` 合并基础与 `.override` / `.top` 部分
+fn extract_locale_files(zip_path: &Path) -> anyhow::Result<BTreeMap<String, ini::Ini>> {
     let data = std::fs::read(zip_path)?;
     let cursor = std::io::Cursor::new(data);
     let mut archive = zip::ZipArchive::new(cursor)?;
-    let mut files: BTreeMap<String, String> = BTreeMap::new();
+    let mut parts_by_mod: BTreeMap<String, (Vec<String>, Vec<String>)> = BTreeMap::new();
 
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
+        if entry.is_dir() {
+            continue;
+        }
         let name = entry.name().to_string();
-        // 匹配 <root>/locale/zh-CN/<mod>.cfg 或 <root>/locale/zh-CN/<mod>.cfg.disabled
-        if let Some(rest) = name.strip_prefix("tanvec-ai-cn/locale/zh-CN/") {
-            let mod_name = rest
-                .strip_suffix(".cfg")
-                .or_else(|| rest.strip_suffix(".cfg.disabled"))
-                .unwrap_or(rest)
-                .to_string();
-            let mut content = String::new();
-            entry.read_to_string(&mut content)?;
-            files.insert(mod_name, content);
+        let Some((_, rest)) = name.split_once("/locale/zh-CN/") else {
+            continue;
+        };
+        if rest.contains('/') {
+            continue;
+        }
+
+        let base_name = if let Some(b) = rest.strip_suffix(".cfg.disabled") {
+            format!("{}.cfg", b)
+        } else if rest.ends_with(".cfg") {
+            rest.to_string()
+        } else {
+            continue;
+        };
+
+        let stem = base_name.strip_suffix(".cfg").unwrap_or(&base_name);
+        let is_override = stem.ends_with(".override");
+        let stem_no_override = stem.strip_suffix(".override").unwrap_or(stem);
+        let mod_name = stem_no_override
+            .strip_suffix(".top")
+            .unwrap_or(stem_no_override)
+            .to_string();
+
+        let mut content = String::new();
+        entry.read_to_string(&mut content)?;
+        let entry_parts = parts_by_mod.entry(mod_name).or_default();
+        if is_override {
+            entry_parts.1.push(content);
+        } else {
+            entry_parts.0.push(content);
+        }
+    }
+
+    let mut files: BTreeMap<String, ini::Ini> = BTreeMap::new();
+    for (mod_name, (base_parts, override_parts)) in parts_by_mod {
+        let mut merged = ini::Ini::new();
+        for part in base_parts.into_iter().chain(override_parts.into_iter()) {
+            let ini = tanvec_ai_cn::translation::str_to_ini(&part)
+                .with_context(|| format!("解析 {} 的 locale 文件失败", mod_name))?;
+            for (sec, props) in ini.iter() {
+                for (k, v) in props.iter() {
+                    merged.with_section(sec).set(k, v);
+                }
+            }
+        }
+        if merged.iter().any(|(_, p)| !p.is_empty()) {
+            files.insert(mod_name, merged);
         }
     }
 
@@ -271,10 +311,20 @@ async fn run() -> anyhow::Result<()> {
         .compression_method(zip::CompressionMethod::Deflated);
 
     for mod_name in &matched {
-        if let Some(content) = locale_files.get(mod_name) {
-            let zip_path = format!("{}/locale/zh-CN/{}.cfg", output_name, mod_name);
-            zip_writer.start_file(&zip_path, options)?;
-            zip_writer.write_all(content.as_bytes())?;
+        if let Some(merged_ini) = locale_files.get(mod_name).cloned() {
+            let (top_opt, sec_opt) = tanvec_ai_cn::pack::split_top_level_if_colliding(merged_ini);
+            if let Some(sec_ini) = sec_opt {
+                let content = tanvec_ai_cn::translation::ini_to_str(&sec_ini)?;
+                let zip_path = format!("{}/locale/zh-CN/{}.cfg", output_name, mod_name);
+                zip_writer.start_file(&zip_path, options)?;
+                zip_writer.write_all(content.as_bytes())?;
+            }
+            if let Some(top_ini) = top_opt {
+                let content = tanvec_ai_cn::translation::ini_to_str(&top_ini)?;
+                let zip_path = format!("{}/locale/zh-CN/{}.top.cfg", output_name, mod_name);
+                zip_writer.start_file(&zip_path, options)?;
+                zip_writer.write_all(content.as_bytes())?;
+            }
         }
     }
 

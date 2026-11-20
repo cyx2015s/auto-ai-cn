@@ -446,6 +446,71 @@ struct SearchRequestBody<'a> {
 }
 
 // ============================================================================
+// 辅助函数（错误脱敏与重试）
+// ============================================================================
+
+/// 移除 `reqwest::Error` 中的完整 URL（避免将 `?username=...&token=...` 明文写入日志）
+fn redact_reqwest_error(err: reqwest::Error) -> anyhow::Error {
+    anyhow::Error::new(err.without_url())
+}
+
+enum RetryError {
+    Retryable(anyhow::Error),
+    Fatal(anyhow::Error),
+}
+
+async fn retry_async<T, F, Fut>(op_name: &str, max_attempts: usize, mut f: F) -> anyhow::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, RetryError>>,
+{
+    let attempts = max_attempts.max(1);
+    for attempt in 1..=attempts {
+        match f().await {
+            Ok(v) => return Ok(v),
+            Err(RetryError::Fatal(e)) => return Err(e),
+            Err(RetryError::Retryable(e)) => {
+                if attempt == attempts {
+                    return Err(e);
+                }
+                let backoff_ms = 1000u64 * (1u64 << (attempt - 1));
+                log::warn!(
+                    "{} 第 {}/{} 次尝试失败: {} — {}ms 后重试",
+                    op_name,
+                    attempt,
+                    attempts,
+                    e,
+                    backoff_ms
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+            }
+        }
+    }
+    unreachable!()
+}
+
+async fn check_response_status(
+    resp: reqwest::Response,
+    label: &str,
+) -> Result<reqwest::Response, RetryError> {
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(resp);
+    }
+    let text = resp.text().await.unwrap_or_default();
+    let msg = if let Ok(err) = serde_json::from_str::<ErrorResponse>(&text) {
+        format!("{} ({}): {}", label, status, err.message)
+    } else {
+        format!("{} ({}): {}", label, status, text)
+    };
+    if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        Err(RetryError::Retryable(anyhow::anyhow!(msg)))
+    } else {
+        Err(RetryError::Fatal(anyhow::anyhow!(msg)))
+    }
+}
+
+// ============================================================================
 // 构造函数（登录 / 预填充）
 // ============================================================================
 
@@ -453,34 +518,63 @@ impl FactorioWebClient {
     /// 使用用户名和密码登录，获取 token
     pub async fn login(user: String, password: String) -> anyhow::Result<Self> {
         let client = reqwest::Client::new();
-        let response = client
-            .post(format!("{AUTH_BASE}/api-login"))
-            .form(&[
-                ("username", user.as_str()),
-                ("password", password.as_str()),
-                ("api_version", "6"),
-            ])
-            .send()
-            .await?;
-        let body: serde_json::Value = response.json().await?;
+        let url = format!("{AUTH_BASE}/api-login");
+        let (username, token) = retry_async("Factorio 登录", 3, || {
+            let client = &client;
+            let url = &url;
+            let user = user.as_str();
+            let password = password.as_str();
+            async move {
+                let response = client
+                    .post(url)
+                    .form(&[
+                        ("username", user),
+                        ("password", password),
+                        ("api_version", "6"),
+                    ])
+                    .send()
+                    .await
+                    .map_err(|e| RetryError::Retryable(redact_reqwest_error(e)))?;
+                let response = check_response_status(response, "登录 API 错误").await?;
+                let body: serde_json::Value = response
+                    .json()
+                    .await
+                    .map_err(|e| RetryError::Retryable(redact_reqwest_error(e)))?;
 
-        if let Some(error) = body.get("error") {
-            let message = body
-                .get("message")
-                .and_then(|m| m.as_str())
-                .unwrap_or("Unknown error");
-            Err(anyhow::anyhow!("登录失败: {} - {}", error, message))
-        } else if let (Some(token), Some(username)) = (body.get("token"), body.get("username")) {
-            Ok(Self {
-                client,
-                config: Config {
-                    user: username.as_str().unwrap_or("").to_string(),
-                    token: token.as_str().unwrap_or("").to_string(),
-                },
-            })
-        } else {
-            Err(anyhow::anyhow!("接收到未知的响应格式: {}", body))
-        }
+                if let Some(error) = body.get("error") {
+                    let message = body
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("Unknown error");
+                    Err(RetryError::Fatal(anyhow::anyhow!(
+                        "登录失败: {} - {}",
+                        error,
+                        message
+                    )))
+                } else if let (Some(token), Some(username)) =
+                    (body.get("token"), body.get("username"))
+                {
+                    Ok((
+                        username.as_str().unwrap_or("").to_string(),
+                        token.as_str().unwrap_or("").to_string(),
+                    ))
+                } else {
+                    Err(RetryError::Fatal(anyhow::anyhow!(
+                        "接收到未知的响应格式: {}",
+                        body
+                    )))
+                }
+            }
+        })
+        .await?;
+
+        Ok(Self {
+            client,
+            config: Config {
+                user: username,
+                token,
+            },
+        })
     }
 
     /// 使用已有的 username 和 token 创建客户端（跳过登录）
@@ -508,6 +602,28 @@ impl FactorioWebClient {
 // ============================================================================
 
 impl FactorioWebClient {
+    async fn get_json_with_retry<T: serde::de::DeserializeOwned>(
+        &self,
+        url: &str,
+        op_name: &str,
+    ) -> anyhow::Result<T> {
+        retry_async(op_name, 3, || {
+            let client = &self.client;
+            async move {
+                let resp = client
+                    .get(url)
+                    .send()
+                    .await
+                    .map_err(|e| RetryError::Retryable(redact_reqwest_error(e)))?;
+                let resp = check_response_status(resp, "API 错误").await?;
+                resp.json::<T>()
+                    .await
+                    .map_err(|e| RetryError::Retryable(redact_reqwest_error(e)))
+            }
+        })
+        .await
+    }
+
     // ------------------------------------------------------------------
     // GET /api/mods/{name} — 获取模组简短信息
     // ------------------------------------------------------------------
@@ -515,17 +631,8 @@ impl FactorioWebClient {
     /// 获取指定模组的简短信息（含 `releases`）。
     pub async fn get_mod(&self, mod_name: &str) -> anyhow::Result<ResultEntry> {
         let url = format!("{MOD_API_BASE}/mods/{mod_name}");
-        let resp = self.client.get(&url).send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            if let Ok(err) = serde_json::from_str::<ErrorResponse>(&text) {
-                return Err(anyhow::anyhow!("API 错误 ({}): {}", status, err.message));
-            }
-            return Err(anyhow::anyhow!("API 错误 ({}): {}", status, text));
-        }
-        let body: ResultEntry = resp.json().await?;
-        Ok(body)
+        self.get_json_with_retry(&url, &format!("获取模组 {mod_name}"))
+            .await
     }
 
     // ------------------------------------------------------------------
@@ -535,17 +642,8 @@ impl FactorioWebClient {
     /// 获取指定模组的完整信息（含 `changelog`, `description`, `tags`, `license` 等）。
     pub async fn get_mod_full(&self, mod_name: &str) -> anyhow::Result<ResultEntry> {
         let url = format!("{MOD_API_BASE}/mods/{mod_name}/full");
-        let resp = self.client.get(&url).send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            if let Ok(err) = serde_json::from_str::<ErrorResponse>(&text) {
-                return Err(anyhow::anyhow!("API 错误 ({}): {}", status, err.message));
-            }
-            return Err(anyhow::anyhow!("API 错误 ({}): {}", status, text));
-        }
-        let body: ResultEntry = resp.json().await?;
-        Ok(body)
+        self.get_json_with_retry(&url, &format!("获取模组完整信息 {mod_name}"))
+            .await
     }
 
     // ------------------------------------------------------------------
@@ -562,17 +660,24 @@ impl FactorioWebClient {
             username: &self.config.user,
             token: &self.config.token,
         };
-        let resp = self.client.post(&url).json(&body).send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            if let Ok(err) = serde_json::from_str::<ErrorResponse>(&text) {
-                return Err(anyhow::anyhow!("API 错误 ({}): {}", status, err.message));
+        retry_async("搜索模组", 3, || {
+            let client = &self.client;
+            let url = &url;
+            let body = &body;
+            async move {
+                let resp = client
+                    .post(url)
+                    .json(body)
+                    .send()
+                    .await
+                    .map_err(|e| RetryError::Retryable(redact_reqwest_error(e)))?;
+                let resp = check_response_status(resp, "API 错误").await?;
+                resp.json::<SearchResponse>()
+                    .await
+                    .map_err(|e| RetryError::Retryable(redact_reqwest_error(e)))
             }
-            return Err(anyhow::anyhow!("API 错误 ({}): {}", status, text));
-        }
-        let body: SearchResponse = resp.json().await?;
-        Ok(body)
+        })
+        .await
     }
 
     // ------------------------------------------------------------------
@@ -584,25 +689,28 @@ impl FactorioWebClient {
     /// 返回原始字节，请按 `Release::file_name` 保存。
     pub async fn download_mod(&self, download_url: &str) -> anyhow::Result<Vec<u8>> {
         let url = format!("{MOD_BASE}{download_url}");
-        let resp = self
-            .client
-            .get(&url)
-            .query(&[
-                ("username", self.config.user.as_str()),
-                ("token", self.config.token.as_str()),
-            ])
-            .send()
-            .await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            if let Ok(err) = serde_json::from_str::<ErrorResponse>(&text) {
-                return Err(anyhow::anyhow!("下载错误 ({}): {}", status, err.message));
+        retry_async(&format!("下载模组 {download_url}"), 3, || {
+            let client = &self.client;
+            let url = &url;
+            async move {
+                let resp = client
+                    .get(url)
+                    .query(&[
+                        ("username", self.config.user.as_str()),
+                        ("token", self.config.token.as_str()),
+                    ])
+                    .send()
+                    .await
+                    .map_err(|e| RetryError::Retryable(redact_reqwest_error(e)))?;
+                let resp = check_response_status(resp, "下载错误").await?;
+                let bytes = resp
+                    .bytes()
+                    .await
+                    .map_err(|e| RetryError::Retryable(redact_reqwest_error(e)))?;
+                Ok(bytes.to_vec())
             }
-            return Err(anyhow::anyhow!("下载错误 ({}): {}", status, text));
-        }
-        let bytes = resp.bytes().await?;
-        Ok(bytes.to_vec())
+        })
+        .await
     }
 
     /// 下载指定 release 的模组文件（快捷方法）。
@@ -616,24 +724,23 @@ impl FactorioWebClient {
         download_url: &str,
     ) -> anyhow::Result<reqwest::Response> {
         let url = format!("{MOD_BASE}{download_url}");
-        let resp = self
-            .client
-            .get(&url)
-            .query(&[
-                ("username", self.config.user.as_str()),
-                ("token", self.config.token.as_str()),
-            ])
-            .send()
-            .await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            if let Ok(err) = serde_json::from_str::<ErrorResponse>(&text) {
-                return Err(anyhow::anyhow!("下载错误 ({}): {}", status, err.message));
+        retry_async(&format!("请求下载模组 {download_url}"), 3, || {
+            let client = &self.client;
+            let url = &url;
+            async move {
+                let resp = client
+                    .get(url)
+                    .query(&[
+                        ("username", self.config.user.as_str()),
+                        ("token", self.config.token.as_str()),
+                    ])
+                    .send()
+                    .await
+                    .map_err(|e| RetryError::Retryable(redact_reqwest_error(e)))?;
+                check_response_status(resp, "下载错误").await
             }
-            return Err(anyhow::anyhow!("下载错误 ({}): {}", status, text));
-        }
-        Ok(resp)
+        })
+        .await
     }
 
     /// 将下载的模组保存到本地文件
@@ -662,7 +769,8 @@ impl FactorioWebClient {
                 ("token", self.config.token.as_str()),
             ])
             .send()
-            .await?;
+            .await
+            .map_err(redact_reqwest_error)?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -671,7 +779,7 @@ impl FactorioWebClient {
             }
             return Err(anyhow::anyhow!("API 错误 ({}): {}", status, text));
         }
-        let body: Vec<String> = resp.json().await?;
+        let body: Vec<String> = resp.json().await.map_err(redact_reqwest_error)?;
         Ok(body)
     }
 
@@ -696,7 +804,8 @@ impl FactorioWebClient {
                 ("state", state_str),
             ])
             .send()
-            .await?;
+            .await
+            .map_err(redact_reqwest_error)?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -930,7 +1039,7 @@ impl FactorioWebClient {
             .await
         {
             Ok(resp) if resp.status().is_success() => {
-                let json: serde_json::Value = resp.json().await?;
+                let json: serde_json::Value = resp.json().await.map_err(redact_reqwest_error)?;
                 (json["upload_url"].as_str().unwrap_or("").to_string(), false)
             }
             _ => {
@@ -942,12 +1051,13 @@ impl FactorioWebClient {
                     .header("Authorization", &auth_header)
                     .form(&[("mod", mod_name)])
                     .send()
-                    .await?;
+                    .await
+                    .map_err(redact_reqwest_error)?;
                 if !resp.status().is_success() {
                     let text = resp.text().await.unwrap_or_default();
                     anyhow::bail!("init_publish 失败: {}", text);
                 }
-                let json: serde_json::Value = resp.json().await?;
+                let json: serde_json::Value = resp.json().await.map_err(redact_reqwest_error)?;
                 (json["upload_url"].as_str().unwrap_or("").to_string(), true)
             }
         };
@@ -969,7 +1079,13 @@ impl FactorioWebClient {
             .mime_str("application/zip")?;
 
         let form = reqwest::multipart::Form::new().part("file", file_part);
-        let resp = self.client.post(&upload_url).multipart(form).send().await?;
+        let resp = self
+            .client
+            .post(&upload_url)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(redact_reqwest_error)?;
 
         if resp.status().is_success() {
             Ok(())
