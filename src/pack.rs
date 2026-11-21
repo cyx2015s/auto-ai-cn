@@ -12,6 +12,7 @@
 //!   locale/zh-CN/toggle_py
 //!   control.lua
 //!   info.json
+//!   thumbnail.png
 //! ```
 //!
 //! 为避免未安装的 mod 覆盖原版游戏词条，protect 模式下按词条级拆分为默认启用的安全文件与默认禁用的 `.override.cfg.disabled`。
@@ -279,6 +280,12 @@ pub fn pack_all_to_one_mod(
     const CONTROL_LUA: &str = include_str!("templates/control.lua");
     zip_writer.start_file(&control_path, options)?;
     zip_writer.write_all(CONTROL_LUA.as_bytes())?;
+
+    // thumbnail.png
+    let thumbnail_path = format!("{}/thumbnail.png", pack_name);
+    const THUMBNAIL_PNG: &[u8] = include_bytes!("templates/thumbnail.png");
+    zip_writer.start_file(&thumbnail_path, options)?;
+    zip_writer.write_all(THUMBNAIL_PNG)?;
 
     // info.json
     let info_json = serde_json::json!({
@@ -767,5 +774,54 @@ mod tests {
             over.section(Some("entity-name")).unwrap().get("beacon"),
             Some("基础插件塔")
         );
+    }
+
+    #[test]
+    fn test_pack_includes_thumbnail() {
+        use std::io::Read;
+
+        let base = std::env::temp_dir().join(format!(
+            "tanvec_pack_thumb_test_{}",
+            std::process::id()
+        ));
+        let cache_dir = base.join("cache");
+        let output_dir = base.join("output");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        let mut zh_files = indexmap::IndexMap::new();
+        zh_files.insert(
+            "demo.cfg".to_string(),
+            "[item-name]\ndemo-item=示例物品\n".to_string(),
+        );
+        let mut contents = indexmap::IndexMap::new();
+        contents.insert(
+            "zh-CN".to_string(),
+            translation::LangInfo { contents: zh_files },
+        );
+        let locale_info = translation::LocaleInfo {
+            contents,
+            version: "1.0.0".to_string(),
+            dependencies: Vec::new(),
+        };
+        std::fs::write(
+            cache_dir.join("demo-mod.json"),
+            serde_json::to_string(&locale_info).unwrap(),
+        )
+        .unwrap();
+
+        let zip_path =
+            pack_all_to_one_mod(&cache_dir, &output_dir, "tanvec-ai-cn", false, None, None)
+                .unwrap();
+
+        let zip_file = std::fs::File::open(&zip_path).unwrap();
+        let mut archive = zip::ZipArchive::new(zip_file).unwrap();
+        let mut thumb_entry = archive.by_name("tanvec-ai-cn/thumbnail.png").unwrap();
+        let mut thumb_bytes = Vec::new();
+        thumb_entry.read_to_end(&mut thumb_bytes).unwrap();
+        assert_eq!(thumb_bytes, include_bytes!("templates/thumbnail.png"));
+
+        drop(thumb_entry);
+        drop(archive);
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
